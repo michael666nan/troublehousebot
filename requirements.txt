@@ -1,0 +1,32 @@
+# =============================================================================
+# TroubleHouseBot Dependencies
+# =============================================================================
+# Install with: pip install -r requirements.txt
+# =============================================================================
+
+# Telegram Bot
+python-telegram-bot>=20.0
+
+# MQTT Communication
+paho-mqtt>=1.6.0
+
+# InfluxDB Time-Series Database
+influxdb-client>=1.36.0
+
+# Environment Variables
+python-dotenv>=1.0.0
+
+# Numerics & Optimisation (pinned for Raspberry Pi compatibility)
+numpy==1.26.4
+scipy==1.11.4
+pandas
+
+# Plotting
+matplotlib>=3.7.0
+plotly
+
+# Anthropic API
+anthropic
+
+# MPC Optimisation (old version only required for 32-bit OS)
+cvxpy==1.3.4
