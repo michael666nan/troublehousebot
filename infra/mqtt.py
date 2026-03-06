@@ -88,7 +88,7 @@ class MQTTClient:
             device_name = msg.topic.split('/')[-1]
             
             # Ignore devices we don't care about
-            if device_name not in config.get_device_names():
+            if device_name not in config.get_all_device_names():
                 return
             
             # Parse JSON payload
