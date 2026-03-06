@@ -24,6 +24,20 @@ from infra.mqtt import mqtt
 from forecasts.weather import get_weather_description
 from control import schedules
 
+# ---------------------------------------------------------------------------
+# Zone helper — for single-zone commands, use the first configured zone.
+# When multi-zone Telegram support is added later, commands will accept an
+# optional zone argument and resolve it here.
+# ---------------------------------------------------------------------------
+
+_zones: dict = {}   # populated by create_bot()
+
+
+def _default_zone():
+    """Return the Zone instance for the first configured zone."""
+    zone_id = config.get_first_zone_id()
+    return _zones[zone_id]
+
 logger = logging.getLogger(__name__)
 
 # Injected by main.py at startup (see create_bot)
@@ -58,11 +72,12 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id):
         return
 
-    thermostat = state.get_by_role("thermostat")
-    radiator = state.get_derived("radiator_1_output")
+    zone      = _default_zone()
+    thermostat = state.get_device(zone.thermostat_name or "")
+    radiator   = state.get_derived(f"{zone.id}_radiator_output")
     weather_data = state.get_weather()
 
-    msg = "🌡️ <b>Thermostat</b>\n"
+    msg = f"🌡️ <b>{zone.display_name} — Thermostat</b>\n"
     msg += f"Current: <code>{thermostat.get('local_temperature', 'N/A')}°C</code>\n"
     msg += f"Target: <code>{thermostat.get('occupied_heating_setpoint', 'N/A')}°C</code>\n\n"
 
@@ -81,12 +96,14 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += f"☀️ Solar: <code>{solar} W/m²</code>\n\n"
 
     msg += "📊 <b>Sensors</b>\n"
-    for device in config.DEVICES:
-        if device["role"] in ["room_temp", "supply_temp", "return_temp"]:
-            sensor_data = state.get_device(device["name"])
-            temp = sensor_data.get("temperature", "N/A")
-            role_label = device["role"].replace("_", " ").title()
-            msg += f"• {role_label}: <code>{temp}°C</code>\n"
+    sensor_roles = ["room_temp", "supply_temp", "return_temp"]
+    for role in sensor_roles:
+        device_name = zone.get_device_name(role)
+        if device_name:
+            sensor_data = state.get_device(device_name)
+            temp_val = sensor_data.get("temperature", "N/A")
+            role_label = role.replace("_", " ").title()
+            msg += f"• {role_label}: <code>{temp_val}°C</code>\n"
 
     await update.message.reply_text(msg, parse_mode="HTML")
 
@@ -111,7 +128,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Temperature must be between 5°C and 30°C")
             return
 
-        thermostat_name = config.get_device_name_by_role("thermostat")
+        thermostat_name = _default_zone().thermostat_name
         if thermostat_name:
             mqtt.send_command(thermostat_name, {"occupied_heating_setpoint": target_temp})
             await update.message.reply_text(
@@ -219,12 +236,13 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    current = schedules.get_current_setpoint()
+    zone_id = config.get_first_zone_id()
+    current = schedules.get_current_setpoint(room=zone_id)
     if not current:
         await update.message.reply_text("❌ No schedule configured")
         return
 
-    horizon = schedules.get_setpoint_horizon(hours)
+    horizon = schedules.get_setpoint_horizon(hours, room=zone_id)
     if not horizon:
         await update.message.reply_text("❌ Failed to get schedule forecast")
         return
@@ -360,20 +378,19 @@ async def cmd_mpc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if force_run:
         await update.message.reply_text("⚡ Running MPC optimization...")
         try:
-            # Compute physical max heat from supply curve + outdoor temp
             from control.radiator import Radiator, supply_temp_from_outdoor
+            zone      = _default_zone()
             weather   = state.get_weather()
             t_outdoor = weather.get("temp", 0.0) if weather else 0.0
             t_supply  = supply_temp_from_outdoor(t_outdoor)
-            t_room    = state.get_by_role("room_temp").get("temperature") or 20.0
-            _rad = Radiator(
-                rad_type=config.RADIATOR_TYPE,
-                height_mm=config.RADIATOR_HEIGHT_MM,
-                length_m=config.RADIATOR_LENGTH_M,
-                n=config.RADIATOR_N,
-            )
-            max_heat = _rad.max_output(t_supply=t_supply, t_room=t_room)
-            setpoint = mpc_module.run_mpc_step(save_plot_flag=True, max_heat=max_heat)
+            room_device = zone.get_device_name("room_temp")
+            t_room    = state.get_device(room_device).get("temperature") if room_device else 20.0
+            t_room    = t_room or 20.0
+            if zone.radiator:
+                max_heat = zone.radiator.max_output(t_supply=t_supply, t_room=t_room)
+            else:
+                max_heat = 1000.0
+            setpoint = mpc_module.run_mpc_step(zone_id=zone.id, max_heat=max_heat)
             if setpoint is None:
                 await update.message.reply_text("❌ MPC optimization failed")
                 return
@@ -382,7 +399,8 @@ async def cmd_mpc(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     try:
-        status = mpc_module.get_mpc_status()
+        zone_id = config.get_first_zone_id()
+        status = mpc_module.get_mpc_status(zone_id)
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to get MPC status: {e}")
         return
@@ -404,7 +422,7 @@ async def cmd_mpc(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(msg, parse_mode="HTML")
 
-    chart_path = mpc_module.get_mpc_plot_path()
+    chart_path = mpc_module.get_mpc_plot_path(config.get_first_zone_id())
     if chart_path:
         try:
             import os
@@ -734,7 +752,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # SECTION 7: BOT SETUP
 # =============================================================================
 
-def create_bot(assistant) -> Application:
+def create_bot(assistant, zones: dict) -> Application:
     """
     Create and configure the Telegram bot application.
 
@@ -744,8 +762,9 @@ def create_bot(assistant) -> Application:
     Returns:
         Configured Application instance ready to run.
     """
-    global _assistant
+    global _assistant, _zones
     _assistant = assistant
+    _zones     = zones
 
     if not config.BOT_TOKEN:
         raise ValueError("BOT_TOKEN not configured in environment")

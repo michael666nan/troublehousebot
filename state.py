@@ -87,7 +87,7 @@ class StateStore:
 
     def __post_init__(self):
         # Pre-populate devices so get_device() never crashes on unknown names
-        for name in config.get_device_names():
+        for name in config.get_all_device_names():
             self.devices[name] = {}
 
         # Restore last known state from disk
@@ -148,10 +148,6 @@ class StateStore:
 
     def get_device(self, name: str) -> dict:
         return self.devices.get(name, {})
-
-    def get_by_role(self, role: str) -> dict:
-        name = config.get_device_name_by_role(role)
-        return self.get_device(name) if name else {}
 
     def get_derived(self, name: str) -> dict:
         return self.derived.get(name, {})

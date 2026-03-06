@@ -1,13 +1,14 @@
 # =============================================================================
 # MAIN - Application Entry Point & Orchestration
 # =============================================================================
-# This is the ONLY file that knows about all the other modules.
-# It handles:
-#   - Starting all services in the correct order
-#   - Scheduling background tasks (weather updates)
-#   - Graceful shutdown
+# Wires all modules together and manages the application lifecycle.
 #
-# Run with: python main.py
+# Each zone gets its own Zone instance which owns:
+#   - Radiator physics
+#   - Sensor-to-thermostat forwarding
+#   - MPC scheduler
+#
+# Global services (weather, prices) are shared across all zones.
 # =============================================================================
 
 import logging
@@ -26,10 +27,6 @@ from forecasts import weather as weather_module
 from forecasts import prices as prices_module
 from control import mpc as mpc_module
 
-# =============================================================================
-# SECTION 1: LOGGING SETUP
-# =============================================================================
-
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -38,117 +35,136 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# SECTION 2: THERMOSTAT INITIALIZATION
+# SECTION 1: ZONE CLASS
 # =============================================================================
 
-def _apply_thermostat_settings() -> None:
+class Zone:
     """
-    Send default settings to all configured thermostats.
-    Called once on startup to ensure correct configuration.
+    Owns everything belonging to a single heating zone:
+      - Radiator physics (EN 442)
+      - Sensor-to-thermostat temperature forwarding
+      - MPC scheduler
     """
-    settings_dict = getattr(config, 'THERMOSTAT_DEFAULT_SETTINGS', {})
-    
-    for thermostat, settings in settings_dict.items():
-        if not settings:
-            continue
-        mqtt.send_command(thermostat, settings)
-        logger.info(f"⚙️ Applied settings to {thermostat}: {list(settings.keys())}")
 
+    def __init__(self, zone_id: str, zone_cfg: dict):
+        self.id           = zone_id
+        self.display_name = zone_cfg["display_name"]
+        self.devices      = zone_cfg["devices"]
 
-# =============================================================================
-# SECTION 3: SENSOR-THERMOSTAT COUPLING
-# =============================================================================
+        # Radiator — only if radiator config is present
+        rad_cfg       = zone_cfg.get("radiator")
+        self.radiator = Radiator(**rad_cfg) if rad_cfg else None
 
-_coupling_last_sent: dict[str, float] = {}
+        # MPC scheduler
+        mpc_cfg         = zone_cfg.get("mpc", {})
+        mpc_interval    = mpc_cfg.get("dt_minutes", 15) * 60
+        mpc_enabled     = mpc_cfg.get("enabled", False)
+        self.mpc_scheduler = MpcScheduler(self, mpc_interval, enabled=mpc_enabled)
 
+        # Cache for thermostat forwarding — avoids spamming tiny changes
+        self._coupling_last_sent: dict[str, float] = {}
 
-def _forward_sensor_to_thermostat(name: str, payload: dict) -> None:
-    """
-    Check if this sensor should forward its temperature to a thermostat.
-    Called automatically when any device updates.
-    """
-    device = None
-    for d in config.DEVICES:
-        if d["name"] == name:
-            device = d
-            break
+        logger.info(f"Zone '{self.display_name}' ({self.id}) initialised")
 
-    if not device:
-        return
+    # -------------------------------------------------------------------------
+    # Properties
+    # -------------------------------------------------------------------------
 
-    role = device.get("role")
+    @property
+    def thermostat_name(self) -> str | None:
+        return self.devices.get("thermostat")
 
-    for coupling in config.SENSOR_THERMOSTAT_COUPLINGS:
-        if coupling["sensor_role"] != role:
-            continue
+    @property
+    def has_radiator_sensors(self) -> bool:
+        return all(r in self.devices for r in ["supply_temp", "return_temp", "room_temp"])
 
+    def get_device_name(self, role: str) -> str | None:
+        return self.devices.get(role)
+
+    # -------------------------------------------------------------------------
+    # Lifecycle
+    # -------------------------------------------------------------------------
+
+    def start(self) -> None:
+        self._apply_thermostat_settings()
+        state.on_device_update(self.on_sensor_update)
+        self.mpc_scheduler.start()
+        logger.info(f"Zone '{self.display_name}' started")
+
+    def stop(self) -> None:
+        self.mpc_scheduler.stop()
+
+    # -------------------------------------------------------------------------
+    # Sensor callbacks
+    # -------------------------------------------------------------------------
+
+    def on_sensor_update(self, name: str, payload: dict) -> None:
+        """Called on every MQTT device update. Ignores devices not in this zone."""
+        if name not in self.devices.values():
+            return
+        self._forward_to_thermostat(name, payload)
+        self._update_radiator_output()
+
+    def _forward_to_thermostat(self, name: str, payload: dict) -> None:
+        """Forward room_temp sensor reading to thermostat as external sensor value."""
+        if name != self.devices.get("room_temp"):
+            return
+        thermostat = self.thermostat_name
+        if not thermostat:
+            return
         temperature = payload.get("temperature")
         if temperature is None:
-            continue
-
+            return
         temperature = round(temperature, 1)
+        last = self._coupling_last_sent.get(thermostat)
+        if last is not None and abs(temperature - last) < 0.1:
+            return   # suppress tiny fluctuations
+        self._coupling_last_sent[thermostat] = temperature
+        temp_centidegrees = int(temperature * 100)
+        mqtt.send_command(thermostat, {"external_measured_room_sensor": temp_centidegrees})
+        logger.info(f"[{self.display_name}] Forwarded {temperature}C -> {thermostat}")
 
-        cache_key = coupling["thermostat"]
-        if cache_key in _coupling_last_sent:
-            if abs(temperature - _coupling_last_sent[cache_key]) < 0.1:
-                return
+    def _update_radiator_output(self) -> None:
+        """Recalculate radiator heat output from current pipe temperatures."""
+        if not self.radiator or not self.has_radiator_sensors:
+            return
+        t_room   = state.get_device(self.devices["room_temp"]).get("temperature")
+        t_supply = state.get_device(self.devices["supply_temp"]).get("temperature")
+        t_return = state.get_device(self.devices["return_temp"]).get("temperature")
+        if None in [t_room, t_supply, t_return]:
+            return
+        watts = self.radiator.output(t_supply=t_supply, t_return=t_return, t_room=t_room)
+        state.update_derived(f"{self.id}_radiator_output", {"watts": watts})
 
-        _coupling_last_sent[cache_key] = temperature
-        temperature_centidegrees = int(temperature * 100)
-
-        mqtt.send_command(coupling["thermostat"], {
-            coupling["field"]: temperature_centidegrees
-        })
-        logger.info(f"🔗 Forwarded {temperature}°C ({temperature_centidegrees}) → {coupling['thermostat']}")
-
-
-# Radiator instance — created once at startup from config
-_radiator = Radiator(
-    rad_type=config.RADIATOR_TYPE,
-    height_mm=config.RADIATOR_HEIGHT_MM,
-    length_m=config.RADIATOR_LENGTH_M,
-    n=config.RADIATOR_N,
-)
-
-
-def _update_radiator_output(name: str, payload: dict) -> None:
-    """
-    Recalculate radiator heat output whenever any sensor updates.
-    Writes result back to state via update_derived().
-    """
-    t_room   = state.get_by_role("room_temp").get("temperature")
-    t_supply = state.get_by_role("supply_temp").get("temperature")
-    t_return = state.get_by_role("return_temp").get("temperature")
-
-    if None in [t_room, t_supply, t_return]:
-        return
-
-    watts = _radiator.output(t_supply=t_supply, t_return=t_return, t_room=t_room)
-    state.update_derived("radiator_1_output", {"watts": watts})
+    def _apply_thermostat_settings(self) -> None:
+        """Send default settings to thermostat on startup."""
+        settings = config.ZONES[self.id].get("thermostat_settings", {})
+        if settings and self.thermostat_name:
+            mqtt.send_command(self.thermostat_name, settings)
+            logger.info(f"Applied settings to {self.thermostat_name}")
 
 
 # =============================================================================
-# SECTION 4: BACKGROUND TASKS
+# SECTION 2: BACKGROUND SCHEDULERS
 # =============================================================================
 
 class WeatherScheduler:
-    """Periodically fetches weather data and updates the state store."""
+    """Periodically fetches weather data and updates state."""
 
     def __init__(self, interval_seconds: int):
         self.interval = interval_seconds
-        self.timer = None
-        self.running = False
+        self.timer    = None
+        self.running  = False
 
     def start(self):
         self.running = True
         self._run_update()
-        logger.info(f"✅ Weather scheduler started (every {self.interval}s)")
+        logger.info(f"Weather scheduler started (every {self.interval}s)")
 
     def stop(self):
         self.running = False
         if self.timer:
             self.timer.cancel()
-        logger.info("🛑 Weather scheduler stopped")
 
     def _run_update(self):
         if not self.running:
@@ -158,7 +174,7 @@ class WeatherScheduler:
             if data:
                 state.update_weather(data)
         except Exception as e:
-            logger.error(f"❌ Weather update failed: {e}")
+            logger.error(f"Weather update failed: {e}")
         if self.running:
             self.timer = threading.Timer(self.interval, self._run_update)
             self.timer.daemon = True
@@ -166,23 +182,22 @@ class WeatherScheduler:
 
 
 class PriceScheduler:
-    """Periodically fetches electricity prices and updates the state store."""
+    """Periodically fetches electricity prices and updates state."""
 
     def __init__(self, interval_seconds: int = 900):
         self.interval = interval_seconds
-        self.timer = None
-        self.running = False
+        self.timer    = None
+        self.running  = False
 
     def start(self):
         self.running = True
         self._run_update()
-        logger.info(f"✅ Price scheduler started (every {self.interval}s)")
+        logger.info(f"Price scheduler started (every {self.interval}s)")
 
     def stop(self):
         self.running = False
         if self.timer:
             self.timer.cancel()
-        logger.info("🛑 Price scheduler stopped")
 
     def _run_update(self):
         if not self.running:
@@ -192,7 +207,7 @@ class PriceScheduler:
             if data:
                 state.update_price(data)
         except Exception as e:
-            logger.error(f"❌ Price update failed: {e}")
+            logger.error(f"Price update failed: {e}")
         if self.running:
             self.timer = threading.Timer(self.interval, self._run_update)
             self.timer.daemon = True
@@ -201,155 +216,163 @@ class PriceScheduler:
 
 class MpcScheduler:
     """
-    Periodically runs MPC optimization and sends setpoint to thermostat.
-    Aligned to clock boundaries (:00, :15, :30, :45 for 15-min intervals).
+    Runs MPC optimization for one zone at clock-aligned intervals
+    (:00, :15, :30, :45 for 15-minute steps).
     """
 
-    def __init__(self, interval_seconds: int, enabled: bool = True):
+    def __init__(self, zone: Zone, interval_seconds: int, enabled: bool = True):
+        self.zone     = zone
         self.interval = interval_seconds
-        self.timer = None
-        self.running = False
-        self.enabled = enabled
+        self.timer    = None
+        self.running  = False
+        self.enabled  = enabled
 
     def _seconds_until_next_slot(self) -> int:
         from datetime import datetime
-        now = datetime.now()
+        now              = datetime.now()
         interval_minutes = self.interval // 60
-        current_minute = now.minute
-        next_aligned_minute = ((current_minute // interval_minutes) + 1) * interval_minutes
-        if next_aligned_minute >= 60:
-            minutes_to_wait = (60 - current_minute) + (next_aligned_minute - 60)
+        next_aligned     = ((now.minute // interval_minutes) + 1) * interval_minutes
+        if next_aligned >= 60:
+            wait = (60 - now.minute) + (next_aligned - 60)
         else:
-            minutes_to_wait = next_aligned_minute - current_minute
-        seconds_to_wait = minutes_to_wait * 60 - now.second
-        return max(5, seconds_to_wait + 5)
+            wait = next_aligned - now.minute
+        return max(5, wait * 60 - now.second + 5)
 
     def start(self):
         if not self.enabled:
-            logger.info("⏸️ MPC scheduler disabled")
+            logger.info(f"MPC disabled for zone '{self.zone.display_name}'")
             return
         self.running = True
-        delay = self._seconds_until_next_slot()
-        interval_minutes = self.interval // 60
+        delay        = self._seconds_until_next_slot()
         from datetime import datetime, timedelta
         next_run = datetime.now() + timedelta(seconds=delay)
         self.timer = threading.Timer(delay, self._run_update)
         self.timer.daemon = True
         self.timer.start()
-        logger.info(f"✅ MPC scheduler started (every {interval_minutes}min at :00/:15/:30/:45)")
-        logger.info(f"   First run at {next_run.strftime('%H:%M:%S')} (in {delay}s)")
+        logger.info(
+            f"MPC scheduler started for zone '{self.zone.display_name}' "
+            f"(first run at {next_run.strftime('%H:%M:%S')})"
+        )
 
     def stop(self):
         self.running = False
         if self.timer:
             self.timer.cancel()
-        logger.info("🛑 MPC scheduler stopped")
 
     def _run_update(self):
         if not self.running:
             return
         try:
-            # Compute physical max heat from supply curve + outdoor temp.
-            # Uses heating curve (config.SUPPLY_TEMP_CURVE) so max_heat reflects
-            # what the heat pump can deliver, not the momentary pipe temperature.
-            weather  = state.get_weather()
+            weather   = state.get_weather()
             t_outdoor = weather.get("temp", 0.0) if weather else 0.0
             t_supply  = supply_temp_from_outdoor(t_outdoor)
-            t_room    = state.get_by_role("room_temp").get("temperature") or 20.0
-            max_heat  = _radiator.max_output(t_supply=t_supply, t_room=t_room)
-            logger.info(f"🌡️ t_outdoor={t_outdoor:.1f}°C → t_supply={t_supply:.1f}°C → max_heat={max_heat:.0f}W")
 
-            setpoint = mpc_module.run_mpc_step(max_heat=max_heat)
-            if setpoint is not None:
-                thermostat_name = config.get_device_name_by_role("thermostat")
-                if thermostat_name:
-                    mqtt.send_command(thermostat_name, {
-                        "occupied_heating_setpoint": setpoint
-                    })
-                    logger.info(f"🎯 MPC setpoint sent: {setpoint:.1f}°C → {thermostat_name}")
+            room_device = self.zone.get_device_name("room_temp")
+            t_room = state.get_device(room_device).get("temperature") if room_device else None
+            t_room = t_room or 20.0
+
+            if self.zone.radiator:
+                max_heat = self.zone.radiator.max_output(t_supply=t_supply, t_room=t_room)
+            else:
+                max_heat = 1000.0
+
+            logger.info(
+                f"[{self.zone.display_name}] "
+                f"t_outdoor={t_outdoor:.1f}C -> t_supply={t_supply:.1f}C -> max_heat={max_heat:.0f}W"
+            )
+
+            setpoint = mpc_module.run_mpc_step(zone_id=self.zone.id, max_heat=max_heat)
+            if setpoint is not None and self.zone.thermostat_name:
+                mqtt.send_command(
+                    self.zone.thermostat_name,
+                    {"occupied_heating_setpoint": setpoint}
+                )
+                logger.info(
+                    f"[{self.zone.display_name}] MPC setpoint sent: {setpoint:.1f}C"
+                )
         except Exception as e:
-            logger.error(f"❌ MPC update failed: {e}")
+            logger.error(f"MPC update failed for zone '{self.zone.display_name}': {e}")
+
         if self.running:
-            delay = self._seconds_until_next_slot()
+            delay      = self._seconds_until_next_slot()
             self.timer = threading.Timer(delay, self._run_update)
             self.timer.daemon = True
             self.timer.start()
 
 
 # =============================================================================
-# SECTION 5: APPLICATION LIFECYCLE
+# SECTION 3: APPLICATION LIFECYCLE
 # =============================================================================
 
 class Application:
     """
-    Main application class that orchestrates all components.
+    Orchestrates all components.
 
     Startup order:
         1. InfluxDB
         2. MQTT
-        3. Thermostat default settings
-        4. Device update callbacks
-        5. Weather scheduler
-        6. Price scheduler
-        7. MPC scheduler
-        8. Telegram bot
+        3. Zones (thermostat settings, sensor callbacks, MPC schedulers)
+        4. Weather scheduler
+        5. Price scheduler
+        6. Telegram bot
     """
 
     def __init__(self):
+        # Create one Zone instance per configured zone
+        self.zones = {
+            zone_id: Zone(zone_id, zone_cfg)
+            for zone_id, zone_cfg in config.ZONES.items()
+        }
+
         self.weather_scheduler = WeatherScheduler(config.WEATHER_UPDATE_INTERVAL)
         self.price_scheduler   = PriceScheduler(config.WEATHER_UPDATE_INTERVAL)
-        mpc_interval = config.MPC_CONFIG.get("dt_minutes", 15) * 60
-        mpc_enabled  = config.MPC_CONFIG.get("enabled", False)
-        self.mpc_scheduler = MpcScheduler(mpc_interval, enabled=mpc_enabled)
-        self.assistant     = AIAssistant(state)
-        self.telegram_app  = None
+        self.assistant         = AIAssistant(state)
+        self.telegram_app      = None
 
     def start(self):
-        logger.info("🚀 Starting TroubleHouseBot...")
+        logger.info("Starting TroubleHouseBot...")
 
         influx.start()
         mqtt.start()
-        _apply_thermostat_settings()
 
-        state.on_device_update(_forward_sensor_to_thermostat)
-        state.on_device_update(_update_radiator_output)
-        logger.info("✅ Device update callbacks registered")
+        for zone in self.zones.values():
+            zone.start()
 
         self.weather_scheduler.start()
         self.price_scheduler.start()
-        self.mpc_scheduler.start()
 
-        self.telegram_app = create_bot(assistant=self.assistant)
+        self.telegram_app = create_bot(assistant=self.assistant, zones=self.zones)
 
-        logger.info("✅ All services started")
-        logger.info("📱 Telegram bot is running. Press Ctrl+C to stop.")
+        logger.info("All services started")
+        logger.info("Telegram bot running. Press Ctrl+C to stop.")
 
         self.telegram_app.run_polling()
 
     def stop(self):
-        logger.info("🛑 Shutting down...")
-        self.mpc_scheduler.stop()
+        logger.info("Shutting down...")
+        for zone in self.zones.values():
+            zone.stop()
         self.weather_scheduler.stop()
         self.price_scheduler.stop()
         mqtt.stop()
         influx.stop()
-        logger.info("👋 Goodbye!")
+        logger.info("Goodbye!")
 
 
 # =============================================================================
-# SECTION 6: ENTRY POINT
+# SECTION 4: ENTRY POINT
 # =============================================================================
 
 def main():
-    # Seed model_params.json from config defaults if this is a fresh install
+    # Seed model parameter files for all zones if missing
     from control import model_store
-
-    model_store.init_if_missing()
+    for zone_id in config.get_zone_ids():
+        model_store.init_if_missing(zone_id)
 
     app = Application()
 
     def signal_handler(sig, frame):
-        logger.info("\n⚠️ Interrupt received...")
+        logger.info("Interrupt received...")
         app.stop()
         sys.exit(0)
 
@@ -359,7 +382,7 @@ def main():
     try:
         app.start()
     except Exception as e:
-        logger.error(f"❌ Fatal error: {e}")
+        logger.error(f"Fatal error: {e}")
         app.stop()
         sys.exit(1)
 

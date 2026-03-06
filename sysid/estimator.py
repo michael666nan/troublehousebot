@@ -223,8 +223,8 @@ def run_pem(
 
     # --- Prior ---
     if prior is None:
-        import model_store
-        stored = model_store.load()
+        from control import model_store
+        stored = model_store.load(config.get_first_zone_id())
         prior  = {}
         # Physical params: from store if available, else from model bounds midpoint
         for name in model_def.param_names:

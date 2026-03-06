@@ -88,35 +88,32 @@ class InfluxLogger:
     def _log_measurement(self, name: str, data: dict):
         """
         Log a measurement to InfluxDB.
-        
-        Called automatically when state changes (via callback registration).
-        Logs every numeric field in the payload.
-        
-        Args:
-            name: Measurement name (e.g., "sensor_1", "radiator_1_output")
-            data: Dict containing fields to log
+        Adds a zone tag when the device belongs to a known zone.
         """
         if not self.enabled:
             return
 
-        # Build the point with all numeric fields
         point = Point(name)
+
+        # Tag with zone if this device belongs to one
+        zone_id = config.get_zone_for_device(name)
+        if zone_id:
+            point.tag("zone", zone_id)
+
         has_data = False
-        
         for key, value in data.items():
             if isinstance(value, (int, float)):
                 point.field(key, float(value))
                 has_data = True
 
-        # Only write if there's actual data
         if not has_data:
             return
 
         try:
             self.write_api.write(bucket=config.INFLUXDB_BUCKET, record=point)
-            logger.debug(f"📊 Logged to InfluxDB: {name}")
+            logger.debug(f"Logged to InfluxDB: {name}")
         except Exception as e:
-            logger.error(f"❌ InfluxDB write failed: {e}")
+            logger.error(f"InfluxDB write failed: {e}")
 
 
 # =============================================================================

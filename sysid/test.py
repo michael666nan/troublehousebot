@@ -38,8 +38,8 @@ def run_tests(data) -> str:
     lines = [f"🔬 <b>SysID Test Report [{model_def.name}]</b>", ""]
 
     # Build prior from model_store
-    import model_store
-    stored = model_store.load()
+    from control import model_store
+    stored = model_store.load(config.get_first_zone_id())
     prior  = {k: stored.get(k, (model_def.param_bounds[k][0] + model_def.param_bounds[k][1]) / 2)
               for k in model_def.param_names}
 

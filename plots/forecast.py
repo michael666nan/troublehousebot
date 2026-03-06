@@ -63,7 +63,7 @@ def generate_forecast_chart(
         return None, "Plotly not installed. Run: pip install plotly"
 
     try:
-        dt_minutes = config.MPC_CONFIG["dt_minutes"]
+        dt_minutes = config.ZONES[config.get_first_zone_id()]["mpc"]["dt_minutes"]
     except Exception:
         dt_minutes = 15
 

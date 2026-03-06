@@ -30,12 +30,17 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 def _fetch_temperatures(state) -> dict:
-    thermostat = state.get_by_role("thermostat")
-    room       = state.get_by_role("room_temp")
-    supply     = state.get_by_role("supply_temp")
-    ret        = state.get_by_role("return_temp")
+    import config
+    zone_id    = config.get_first_zone_id()
+    zone_cfg   = config.ZONES[zone_id]
+    devices    = zone_cfg["devices"]
+
+    thermostat = state.get_device(devices.get("thermostat", ""))
+    room       = state.get_device(devices.get("room_temp", ""))
+    supply     = state.get_device(devices.get("supply_temp", ""))
+    ret        = state.get_device(devices.get("return_temp", ""))
     weather    = state.get_weather()
-    radiator   = state.get_derived("radiator_1_output")
+    radiator   = state.get_derived(f"{zone_id}_radiator_output")
 
     return {
         "room_temperature_c":        room.get("temperature"),

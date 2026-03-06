@@ -256,7 +256,7 @@ def fetch_id_data(
         IdData with aligned arrays on a regular grid, or None on failure.
     """
     if dt_minutes is None:
-        dt_minutes = config.MPC_CONFIG["dt_minutes"]
+        dt_minutes = config.ZONES[config.get_first_zone_id()]["mpc"]["dt_minutes"]
 
     dt_seconds      = dt_minutes * 60
     max_gap_seconds = max_gap_minutes * 60
