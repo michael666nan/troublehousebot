@@ -342,7 +342,8 @@ class Application:
 
 def main():
     # Seed model_params.json from config defaults if this is a fresh install
-    import model_store
+    from control import model_store
+
     model_store.init_if_missing()
 
     app = Application()
