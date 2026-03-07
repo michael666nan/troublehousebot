@@ -343,6 +343,7 @@ def estimate_state(y_measured: float, u_prev: float) -> np.ndarray:
         "last_update":     datetime.now().isoformat(),
         "last_y_measured": y_measured,
         "last_u":          u_prev,
+        "last_innovation": float(e),
     })
 
     return x_post.flatten()

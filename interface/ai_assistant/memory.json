@@ -226,6 +226,386 @@
       "role": "assistant",
       "content": "Here's the 30-day battery chart for all your Zigbee devices \ud83d\udcca\n\nThe system has <b>4 battery-powered devices</b>:\n\n\u2022 <b>Sensor 1</b> \u2014 room temperature sensor\n\u2022 <b>Sensor 2</b> \u2014 room temperature sensor\n\u2022 <b>Sensor 3</b> \u2014 room temperature sensor\n\u2022 <b>Thermostat 1</b> \u2014 Danfoss Ally TRV\n\nThe chart shows their battery trends over the last 30 days. If any device is dropping quickly, it might be time to grab some replacement batteries! \ud83d\udd0b",
       "timestamp": "2026-03-07T04:09:21"
+    },
+    {
+      "role": "user",
+      "content": "what are the current battery levels and link quality?",
+      "timestamp": "2026-03-07T08:33:46"
+    },
+    {
+      "role": "tool_call",
+      "tool_id": "toolu_016qRu3ESyr1kaqK2kyMwmec",
+      "name": "get_influx_schema",
+      "input": {},
+      "timestamp": "2026-03-07T08:33:49"
+    },
+    {
+      "role": "tool_result",
+      "tool_id": "toolu_016qRu3ESyr1kaqK2kyMwmec",
+      "name": "get_influx_schema",
+      "content": {
+        "bucket": "housebot",
+        "measurements": {
+          "electricity_price": {
+            "fields": [
+              "grid_tariff",
+              "price_eur",
+              "price_full",
+              "price_full_ex_vat",
+              "price_spot",
+              "system_tariff",
+              "tax",
+              "transmission_tariff"
+            ],
+            "first": null,
+            "last": null
+          },
+          "outside_weather": {
+            "fields": [
+              "code",
+              "hum",
+              "is_day",
+              "pressure",
+              "rain",
+              "soil_0cm",
+              "soil_18cm",
+              "soil_54cm",
+              "soil_6cm",
+              "solar_diffuse",
+              "solar_direct",
+              "solar_dni",
+              "solar_east",
+              "solar_ghi",
+              "solar_north",
+              "solar_south",
+              "solar_west",
+              "temp",
+              "wind",
+              "wind_dir",
+              "wind_gust",
+              "wind_speed"
+            ],
+            "first": null,
+            "last": null
+          },
+          "radiator_1_output": {
+            "fields": [
+              "watts"
+            ],
+            "first": null,
+            "last": null
+          },
+          "sensor_1": {
+            "fields": [
+              "battery",
+              "humidity",
+              "linkquality",
+              "power_outage_count",
+              "pressure",
+              "temperature",
+              "voltage"
+            ],
+            "first": null,
+            "last": null
+          },
+          "sensor_2": {
+            "fields": [
+              "battery",
+              "humidity",
+              "linkquality",
+              "power_outage_count",
+              "pressure",
+              "temperature",
+              "voltage"
+            ],
+            "first": null,
+            "last": null
+          },
+          "sensor_3": {
+            "fields": [
+              "battery",
+              "humidity",
+              "linkquality",
+              "power_outage_count",
+              "pressure",
+              "temperature",
+              "voltage"
+            ],
+            "first": null,
+            "last": null
+          },
+          "thermostat_1": {
+            "fields": [
+              "abs_max_heat_setpoint_limit",
+              "adaptation_run_settings",
+              "algorithm_scale_factor",
+              "battery",
+              "external_measured_room_sensor",
+              "heat_available",
+              "heat_required",
+              "linkquality",
+              "load_balancing_enable",
+              "load_estimate",
+              "load_room_mean",
+              "local_temperature",
+              "local_temperature_calibration",
+              "mounted_mode_active",
+              "mounted_mode_control",
+              "occupied_heating_setpoint",
+              "occupied_heating_setpoint_scheduled",
+              "pi_heating_demand",
+              "preheat_status",
+              "radiator_covered",
+              "trigger_time",
+              "window_open_external",
+              "window_open_feature"
+            ],
+            "first": null,
+            "last": null
+          },
+          "zone_1_radiator_output": {
+            "fields": [
+              "watts"
+            ],
+            "first": null,
+            "last": null
+          }
+        },
+        "count": 8
+      },
+      "timestamp": "2026-03-07T08:33:50"
+    },
+    {
+      "role": "tool_call",
+      "tool_id": "toolu_01WRgZtg1GZDKDnuqcRCLwMs",
+      "name": "plot_influx",
+      "input": {
+        "series": [
+          {
+            "measurement": "sensor_1",
+            "field": "battery",
+            "label": "Sensor 1 Battery",
+            "unit": "%"
+          },
+          {
+            "measurement": "sensor_2",
+            "field": "battery",
+            "label": "Sensor 2 Battery",
+            "unit": "%"
+          },
+          {
+            "measurement": "sensor_3",
+            "field": "battery",
+            "label": "Sensor 3 Battery",
+            "unit": "%"
+          },
+          {
+            "measurement": "thermostat_1",
+            "field": "battery",
+            "label": "Thermostat Battery",
+            "unit": "%"
+          },
+          {
+            "measurement": "sensor_1",
+            "field": "linkquality",
+            "label": "Sensor 1 LQI",
+            "unit": "LQI",
+            "axis": 2
+          },
+          {
+            "measurement": "sensor_2",
+            "field": "linkquality",
+            "label": "Sensor 2 LQI",
+            "unit": "LQI",
+            "axis": 2
+          },
+          {
+            "measurement": "sensor_3",
+            "field": "linkquality",
+            "label": "Sensor 3 LQI",
+            "unit": "LQI",
+            "axis": 2
+          },
+          {
+            "measurement": "thermostat_1",
+            "field": "linkquality",
+            "label": "Thermostat LQI",
+            "unit": "LQI",
+            "axis": 2
+          }
+        ],
+        "time_range": "7d",
+        "title": "Battery & Link Quality (7 days)"
+      },
+      "timestamp": "2026-03-07T08:33:56"
+    },
+    {
+      "role": "tool_result",
+      "tool_id": "toolu_01WRgZtg1GZDKDnuqcRCLwMs",
+      "name": "plot_influx",
+      "content": {
+        "description": "Battery & Link Quality (7 days) \u2014 7d",
+        "message": "Chart generated \u2014 sending as file."
+      },
+      "timestamp": "2026-03-07T08:33:56"
+    },
+    {
+      "role": "assistant",
+      "content": "Here's a 7-day chart showing both <b>battery levels</b> (%, left axis) and <b>link quality</b> (LQI, right axis) for all your Zigbee devices:\n\n\u2022 <b>Sensor 1, 2, 3</b> \u2014 room temperature sensors\n\u2022 <b>Thermostat 1</b> \u2014 the Danfoss Ally TRV\n\nYou can zoom in and hover over the chart to see exact values. If any battery is dropping fast or link quality dips low, let me know and we can look into it further! \ud83d\udd0b\ud83d\udcf6",
+      "timestamp": "2026-03-07T08:34:01"
+    },
+    {
+      "role": "user",
+      "content": "cant you read just the current status?",
+      "timestamp": "2026-03-07T08:34:18"
+    },
+    {
+      "role": "tool_call",
+      "tool_id": "toolu_0168YudecxEiKyYKk9hJnHLH",
+      "name": "get_influx_schema",
+      "input": {},
+      "timestamp": "2026-03-07T08:34:20"
+    },
+    {
+      "role": "tool_result",
+      "tool_id": "toolu_0168YudecxEiKyYKk9hJnHLH",
+      "name": "get_influx_schema",
+      "content": {
+        "bucket": "housebot",
+        "measurements": {
+          "electricity_price": {
+            "fields": [
+              "grid_tariff",
+              "price_eur",
+              "price_full",
+              "price_full_ex_vat",
+              "price_spot",
+              "system_tariff",
+              "tax",
+              "transmission_tariff"
+            ],
+            "first": null,
+            "last": null
+          },
+          "outside_weather": {
+            "fields": [
+              "code",
+              "hum",
+              "is_day",
+              "pressure",
+              "rain",
+              "soil_0cm",
+              "soil_18cm",
+              "soil_54cm",
+              "soil_6cm",
+              "solar_diffuse",
+              "solar_direct",
+              "solar_dni",
+              "solar_east",
+              "solar_ghi",
+              "solar_north",
+              "solar_south",
+              "solar_west",
+              "temp",
+              "wind",
+              "wind_dir",
+              "wind_gust",
+              "wind_speed"
+            ],
+            "first": null,
+            "last": null
+          },
+          "radiator_1_output": {
+            "fields": [
+              "watts"
+            ],
+            "first": null,
+            "last": null
+          },
+          "sensor_1": {
+            "fields": [
+              "battery",
+              "humidity",
+              "linkquality",
+              "power_outage_count",
+              "pressure",
+              "temperature",
+              "voltage"
+            ],
+            "first": null,
+            "last": null
+          },
+          "sensor_2": {
+            "fields": [
+              "battery",
+              "humidity",
+              "linkquality",
+              "power_outage_count",
+              "pressure",
+              "temperature",
+              "voltage"
+            ],
+            "first": null,
+            "last": null
+          },
+          "sensor_3": {
+            "fields": [
+              "battery",
+              "humidity",
+              "linkquality",
+              "power_outage_count",
+              "pressure",
+              "temperature",
+              "voltage"
+            ],
+            "first": null,
+            "last": null
+          },
+          "thermostat_1": {
+            "fields": [
+              "abs_max_heat_setpoint_limit",
+              "adaptation_run_settings",
+              "algorithm_scale_factor",
+              "battery",
+              "external_measured_room_sensor",
+              "heat_available",
+              "heat_required",
+              "linkquality",
+              "load_balancing_enable",
+              "load_estimate",
+              "load_room_mean",
+              "local_temperature",
+              "local_temperature_calibration",
+              "mounted_mode_active",
+              "mounted_mode_control",
+              "occupied_heating_setpoint",
+              "occupied_heating_setpoint_scheduled",
+              "pi_heating_demand",
+              "preheat_status",
+              "radiator_covered",
+              "trigger_time",
+              "window_open_external",
+              "window_open_feature"
+            ],
+            "first": null,
+            "last": null
+          },
+          "zone_1_radiator_output": {
+            "fields": [
+              "watts"
+            ],
+            "first": null,
+            "last": null
+          }
+        },
+        "count": 8
+      },
+      "timestamp": "2026-03-07T08:34:20"
+    },
+    {
+      "role": "assistant",
+      "content": "Unfortunately, my tools only allow me to <b>chart</b> historical InfluxDB data \u2014 I don't have a way to query the latest single value directly from the database.\n\nHowever, I can plot the <b>last 24 hours</b> of battery and link quality for all your Zigbee devices, and you can check the most recent values on the right side of the chart. Want me to do that?\n\nAlternatively, you can check the current device status directly in <b>Zigbee2MQTT</b> or <b>Home Assistant</b> if you have access.",
+      "timestamp": "2026-03-07T08:34:24"
     }
   ]
 }

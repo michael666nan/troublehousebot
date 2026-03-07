@@ -67,80 +67,123 @@ def is_allowed(user_id: int) -> bool:
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /status - Show current system state.
+    /status [zone] - Show current system state.
+    No zone arg: show all zones. With zone arg: show that zone only.
     """
     if not is_allowed(update.effective_user.id):
         return
 
-    zone      = _default_zone()
-    thermostat = state.get_device(zone.thermostat_name or "")
-    radiator   = state.get_derived(zone.radiator_name)
+    from main import _zones
+    zone_ids    = config.get_zone_ids()
     weather_data = state.get_weather()
 
-    msg = f"🌡️ <b>{zone.display_name} — Thermostat</b>\n"
-    msg += f"Current: <code>{thermostat.get('local_temperature', 'N/A')}°C</code>\n"
-    msg += f"Target: <code>{thermostat.get('occupied_heating_setpoint', 'N/A')}°C</code>\n\n"
+    # Resolve which zones to show
+    requested_zone = None
+    for arg in (context.args or []):
+        if arg in zone_ids:
+            requested_zone = arg
 
-    watts = radiator.get("watts", "N/A")
-    msg += f"🔥 <b>Radiator Output</b>: <code>{watts} W</code>\n\n"
+    zones_to_show = [requested_zone] if requested_zone else zone_ids
 
+    msg = ""
+    for zone_id in zones_to_show:
+        zone       = _zones.get(zone_id)
+        if zone is None:
+            continue
+        thermostat = state.get_device(zone.thermostat_name or "")
+        radiator   = state.get_derived(zone.radiator_name)
+
+        msg += f"🌡️ <b>{zone.display_name} — Thermostat</b>\n"
+        msg += f"Current: <code>{thermostat.get('local_temperature', 'N/A')}°C</code>\n"
+        msg += f"Target: <code>{thermostat.get('occupied_heating_setpoint', 'N/A')}°C</code>\n"
+        watts = radiator.get("watts", "N/A")
+        msg += f"🔥 Radiator: <code>{watts} W</code>\n"
+
+        sensor_roles = ["room_temp", "supply_temp", "return_temp"]
+        for role in sensor_roles:
+            device_name = zone.get_device_name(role)
+            if device_name:
+                sensor_data = state.get_device(device_name)
+                temp_val    = sensor_data.get("temperature", "N/A")
+                role_label  = role.replace("_", " ").title()
+                msg += f"• {role_label}: <code>{temp_val}°C</code>\n"
+
+        msg += "\n"
+
+    # Weather — always shown once
     msg += "☁️ <b>Outside</b>\n"
-    temp = weather_data.get("temp", "N/A")
-    hum = weather_data.get("hum", "N/A")
-    code = weather_data.get("code")
-    desc = get_weather_description(code) if code is not None else "N/A"
-    wind = weather_data.get("wind_speed", "N/A")
+    temp  = weather_data.get("temp", "N/A")
+    hum   = weather_data.get("hum", "N/A")
+    code  = weather_data.get("code")
+    desc  = get_weather_description(code) if code is not None else "N/A"
+    wind  = weather_data.get("wind_speed", "N/A")
     solar = weather_data.get("solar_ghi", "N/A")
     msg += f"{desc}\n"
     msg += f"<code>{temp}°C</code> | <code>{hum}%</code> | <code>{wind} km/h</code>\n"
-    msg += f"☀️ Solar: <code>{solar} W/m²</code>\n\n"
-
-    msg += "📊 <b>Sensors</b>\n"
-    sensor_roles = ["room_temp", "supply_temp", "return_temp"]
-    for role in sensor_roles:
-        device_name = zone.get_device_name(role)
-        if device_name:
-            sensor_data = state.get_device(device_name)
-            temp_val = sensor_data.get("temperature", "N/A")
-            role_label = role.replace("_", " ").title()
-            msg += f"• {role_label}: <code>{temp_val}°C</code>\n"
+    msg += f"☀️ Solar: <code>{solar} W/m²</code>\n"
 
     await update.message.reply_text(msg, parse_mode="HTML")
 
 
 async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /set <temperature> - Set thermostat target temperature.
+    /set <temperature> [zone] - Set thermostat target temperature.
     """
     if not is_allowed(update.effective_user.id):
         return
 
     if not context.args:
         await update.message.reply_text(
-            "❌ Usage: <code>/set 21.5</code>",
+            "❌ Usage: <code>/set 21.5 [zone_id]</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    zone_ids = config.get_zone_ids()
+
+    # Parse: /set <temp> [zone_id]  or  /set [zone_id] <temp>
+    temp_arg = None
+    zone_id  = config.get_first_zone_id()
+    for arg in context.args:
+        if arg in zone_ids:
+            zone_id = arg
+        else:
+            temp_arg = arg
+
+    if temp_arg is None:
+        await update.message.reply_text(
+            "❌ Usage: <code>/set 21.5 [zone_id]</code>",
             parse_mode="HTML"
         )
         return
 
     try:
-        target_temp = float(context.args[0])
+        target_temp = float(temp_arg)
         if not (5 <= target_temp <= 30):
             await update.message.reply_text("❌ Temperature must be between 5°C and 30°C")
             return
 
-        thermostat_name = _default_zone().thermostat_name
+        zone = config.ZONES[zone_id]
+        thermostat_name = zone.get("thermostat", {}).get("name") if zone else None
+        # Fallback: get from Zone object if available
+        if not thermostat_name:
+            from main import _zones
+            z = _zones.get(zone_id)
+            thermostat_name = z.thermostat_name if z else None
+
         if thermostat_name:
             mqtt.send_command(thermostat_name, {"occupied_heating_setpoint": target_temp})
+            display = config.ZONES[zone_id].get("display_name", zone_id)
             await update.message.reply_text(
-                f"✅ Target set to <b>{target_temp}°C</b>",
+                f"✅ <b>{display}</b>: target set to <b>{target_temp}°C</b>",
                 parse_mode="HTML"
             )
         else:
-            await update.message.reply_text("❌ No thermostat configured")
+            await update.message.reply_text("❌ No thermostat configured for that zone")
 
     except ValueError:
         await update.message.reply_text(
-            "❌ Invalid temperature. Usage: <code>/set 21.5</code>",
+            "❌ Invalid temperature. Usage: <code>/set 21.5 [zone_id]</code>",
             parse_mode="HTML"
         )
 
@@ -166,22 +209,22 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg += "\n<b>General</b>\n"
     msg += "/help — This message\n"
-    msg += "/status — Current temperatures, radiator output, sensor readings\n"
-    msg += "/set <code>&lt;temp&gt;</code> — Set thermostat setpoint\n"
-    msg += "  e.g. <code>/set 21.5</code>\n"
+    msg += f"/status [<code>zone</code>] — Temperatures, radiator, sensors (all zones if no arg)\n"
+    msg += f"/set <code>&lt;temp&gt;</code> [<code>zone</code>] — Set thermostat setpoint\n"
+    msg += f"  e.g. <code>/set 21.5</code> or <code>/set 21.5 {zone_ids[0]}</code>\n"
 
     msg += "\n<b>Monitoring</b>\n"
     msg += "/weather — Detailed current weather\n"
     msg += "/price — Current electricity price breakdown\n"
-    msg += f"/schedule [<code>hours</code>] — Occupancy schedule forecast\n"
-    msg += "  e.g. <code>/schedule 48</code>\n"
+    msg += f"/schedule [<code>hours</code>] [<code>zone</code>] — Occupancy schedule forecast\n"
+    msg += f"  e.g. <code>/schedule 48 {zone_ids[0]}</code>\n"
     msg += f"/plot <code>&lt;type&gt;</code> [<code>zone</code>] [<code>hours</code>] — Historical data chart\n"
     msg += "  types: <code>temperatures</code> | <code>radiator</code> | <code>prices</code>\n"
     msg += f"  e.g. <code>/plot temperatures {zone_ids[0]} 24</code>\n"
 
     msg += "\n<b>MPC</b>\n"
-    msg += "/mpc — MPC state estimate and forecast chart\n"
-    msg += "/mpc run — Force immediate MPC optimisation\n"
+    msg += f"/mpc [<code>zone</code>] — MPC state estimate and forecast chart\n"
+    msg += f"/mpc run [<code>zone</code>] — Force immediate MPC optimisation\n"
 
     msg += "\n<b>System Identification</b>\n"
     msg += f"/sysid [<code>zone</code>] [<code>hours</code>] [<code>dt</code>] — Fetch and plot ID data\n"
@@ -238,25 +281,29 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /schedule [hours] - Show occupancy schedule and setpoints.
+    /schedule [hours] [zone] - Show occupancy schedule and setpoints.
     """
     if not update.message:
         return
     if not is_allowed(update.effective_user.id):
         return
 
-    hours = 24
-    if context.args:
-        try:
-            hours = max(1, min(int(context.args[0]), 168))
-        except ValueError:
-            await update.message.reply_text(
-                "❌ Invalid hours. Usage: <code>/schedule 24</code>",
-                parse_mode="HTML"
-            )
-            return
+    zone_ids = config.get_zone_ids()
+    hours    = 24
+    zone_id  = config.get_first_zone_id()
 
-    zone_id = config.get_first_zone_id()
+    for arg in (context.args or []):
+        if arg in zone_ids:
+            zone_id = arg
+        else:
+            try:
+                hours = max(1, min(int(arg), 168))
+            except ValueError:
+                await update.message.reply_text(
+                    "❌ Usage: <code>/schedule [hours] [zone_id]</code>",
+                    parse_mode="HTML"
+                )
+                return
     current = schedules.get_current_setpoint(room=zone_id)
     if not current:
         await update.message.reply_text("❌ No schedule configured")
@@ -382,7 +429,7 @@ async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_mpc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /mpc [run] - Show MPC status and latest optimization plot.
+    /mpc [run] [zone] - Show MPC status and latest optimization plot.
     """
     if not update.message:
         return
@@ -392,14 +439,22 @@ async def cmd_mpc(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     from control import mpc as mpc_module
 
-    args = context.args
-    force_run = args and args[0].lower() == "run"
+    zone_ids  = config.get_zone_ids()
+    zone_id   = config.get_first_zone_id()
+    force_run = False
+
+    for arg in (context.args or []):
+        if arg in zone_ids:
+            zone_id = arg
+        elif arg.lower() == "run":
+            force_run = True
 
     if force_run:
         await update.message.reply_text("⚡ Running MPC optimization...")
         try:
             from control.radiator import Radiator, supply_temp_from_outdoor
-            zone      = _default_zone()
+            from main import _zones
+            zone      = _zones.get(zone_id) or _default_zone()
             weather   = state.get_weather()
             t_outdoor = weather.get("temp", 0.0) if weather else 0.0
             t_supply  = supply_temp_from_outdoor(t_outdoor)
@@ -419,13 +474,13 @@ async def cmd_mpc(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     try:
-        zone_id = config.get_first_zone_id()
         status = mpc_module.get_mpc_status(zone_id)
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to get MPC status: {e}")
         return
 
-    msg = "🎯 <b>MPC Status</b>\n\n"
+    display = config.ZONES[zone_id].get("display_name", zone_id)
+    msg = f"🎯 <b>MPC Status — {display}</b>\n\n"
     if status.get("last_update"):
         msg += f"Last run: <code>{status['last_update'][:19]}</code>\n"
     else:
@@ -433,6 +488,9 @@ async def cmd_mpc(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if status.get("last_y_measured") is not None:
         msg += f"T_measured: <code>{status['last_y_measured']:.1f}°C</code>\n"
+
+    if status.get("last_innovation") is not None:
+        msg += f"Innovation e: <code>{status['last_innovation']:+.3f}°C</code>\n"
 
     x_hat = status.get("x_hat", [])
     if len(x_hat) >= 2:
@@ -442,7 +500,7 @@ async def cmd_mpc(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(msg, parse_mode="HTML")
 
-    chart_path = mpc_module.get_mpc_plot_path(config.get_first_zone_id())
+    chart_path = mpc_module.get_mpc_plot_path(zone_id)
     if chart_path:
         try:
             import os
