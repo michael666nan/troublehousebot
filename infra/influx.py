@@ -88,15 +88,36 @@ class InfluxLogger:
     def _log_measurement(self, name: str, data: dict):
         """
         Log a measurement to InfluxDB.
-        Adds a zone tag when the device belongs to a known zone.
+
+        For zone devices: writes under the role name (e.g. "room_temp") with
+        a zone tag (e.g. zone=zone_1). This keeps InfluxDB measurement names
+        clean and role-based, with zone separation via tags.
+
+        For non-zone measurements (weather, prices, derived): writes under
+        the original name unchanged.
         """
         if not self.enabled:
             return
 
-        point = Point(name)
-
-        # Tag with zone if this device belongs to one
         zone_id = config.get_zone_for_device(name)
+        role    = config.get_role_for_device(name)
+
+        # Derived measurements (e.g. zone_1_radiator_output) — look up zone separately
+        if not zone_id:
+            zone_id = config.get_zone_for_derived(name)
+
+        # Determine measurement name for InfluxDB:
+        # - Zone devices: use role (e.g. "room_temp") — clean, zone separated by tag
+        # - Zone derived: strip zone prefix (e.g. "zone_1_radiator_output" → "radiator_output")
+        # - Everything else (weather, prices): use original name unchanged
+        if zone_id and role:
+            measurement = role
+        elif zone_id and name.startswith(f"{zone_id}_"):
+            measurement = name[len(f"{zone_id}_"):]
+        else:
+            measurement = name
+
+        point = Point(measurement)
         if zone_id:
             point.tag("zone", zone_id)
 
@@ -111,7 +132,7 @@ class InfluxLogger:
 
         try:
             self.write_api.write(bucket=config.INFLUXDB_BUCKET, record=point)
-            logger.debug(f"Logged to InfluxDB: {name}")
+            logger.debug(f"Logged to InfluxDB: {measurement} (zone={zone_id})")
         except Exception as e:
             logger.error(f"InfluxDB write failed: {e}")
 

@@ -53,7 +53,9 @@ class Zone:
 
         # Radiator — only if radiator config is present
         rad_cfg           = zone_cfg.get("radiator", {})
-        self.radiator_name = rad_cfg.get("name", f"{zone_id}_radiator_output")
+        # State key is always zone-scoped to avoid clashes between zones.
+        # InfluxDB writes under "radiator_output" with zone tag (handled in influx.py).
+        self.radiator_name = f"{zone_id}_radiator_output"
         rad_kwargs        = {k: v for k, v in rad_cfg.items() if k != "name"}
         self.radiator     = Radiator(**rad_kwargs) if rad_kwargs else None
 
@@ -243,9 +245,6 @@ class MpcScheduler:
         return max(5, wait * 60 - now.second + 5)
 
     def start(self):
-        if not self.enabled:
-            logger.info(f"MPC disabled for zone '{self.zone.display_name}'")
-            return
         self.running = True
         delay        = self._seconds_until_next_slot()
         from datetime import datetime, timedelta
@@ -253,8 +252,9 @@ class MpcScheduler:
         self.timer = threading.Timer(delay, self._run_update)
         self.timer.daemon = True
         self.timer.start()
+        mode = "MPC" if self.enabled else "schedule control"
         logger.info(
-            f"MPC scheduler started for zone '{self.zone.display_name}' "
+            f"[{self.zone.display_name}] {mode} scheduler started "
             f"(first run at {next_run.strftime('%H:%M:%S')})"
         )
 
@@ -267,35 +267,51 @@ class MpcScheduler:
         if not self.running:
             return
         try:
-            weather   = state.get_weather()
-            t_outdoor = weather.get("temp", 0.0) if weather else 0.0
-            t_supply  = supply_temp_from_outdoor(t_outdoor)
+            if self.enabled:
+                # --- MPC control ---
+                weather   = state.get_weather()
+                t_outdoor = weather.get("temp", 0.0) if weather else 0.0
+                t_supply  = supply_temp_from_outdoor(t_outdoor)
 
-            room_device = self.zone.get_device_name("room_temp")
-            t_room = state.get_device(room_device).get("temperature") if room_device else None
-            t_room = t_room or 20.0
+                room_device = self.zone.get_device_name("room_temp")
+                t_room = state.get_device(room_device).get("temperature") if room_device else None
+                t_room = t_room or 20.0
 
-            if self.zone.radiator:
-                max_heat = self.zone.radiator.max_output(t_supply=t_supply, t_room=t_room)
-            else:
-                max_heat = 1000.0
+                if self.zone.radiator:
+                    max_heat = self.zone.radiator.max_output(t_supply=t_supply, t_room=t_room)
+                else:
+                    max_heat = 1000.0
 
-            logger.info(
-                f"[{self.zone.display_name}] "
-                f"t_outdoor={t_outdoor:.1f}C -> t_supply={t_supply:.1f}C -> max_heat={max_heat:.0f}W"
-            )
-
-            setpoint = mpc_module.run_mpc_step(zone_id=self.zone.id, max_heat=max_heat)
-            if setpoint is not None and self.zone.thermostat_name:
-                mqtt.send_command(
-                    self.zone.thermostat_name,
-                    {"occupied_heating_setpoint": setpoint}
-                )
                 logger.info(
-                    f"[{self.zone.display_name}] MPC setpoint sent: {setpoint:.1f}C"
+                    f"[{self.zone.display_name}] "
+                    f"t_outdoor={t_outdoor:.1f}C -> t_supply={t_supply:.1f}C -> max_heat={max_heat:.0f}W"
                 )
+
+                setpoint = mpc_module.run_mpc_step(zone_id=self.zone.id, max_heat=max_heat)
+                if setpoint is not None and self.zone.thermostat_name:
+                    mqtt.send_command(
+                        self.zone.thermostat_name,
+                        {"occupied_heating_setpoint": setpoint}
+                    )
+                    logger.info(f"[{self.zone.display_name}] MPC setpoint sent: {setpoint:.1f}C")
+
+            else:
+                # --- Schedule control (MPC disabled) ---
+                from control import schedules as schedules_module
+                current = schedules_module.get_current_setpoint(room=self.zone.id)
+                if current and self.zone.thermostat_name:
+                    setpoint = current["T_min"]
+                    mqtt.send_command(
+                        self.zone.thermostat_name,
+                        {"occupied_heating_setpoint": setpoint}
+                    )
+                    logger.info(
+                        f"[{self.zone.display_name}] Schedule setpoint sent: "
+                        f"{setpoint:.1f}C ({current['state']})"
+                    )
+
         except Exception as e:
-            logger.error(f"MPC update failed for zone '{self.zone.display_name}': {e}")
+            logger.error(f"Scheduler update failed for zone '{self.zone.display_name}': {e}")
 
         if self.running:
             delay      = self._seconds_until_next_slot()

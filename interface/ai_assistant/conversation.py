@@ -1,14 +1,10 @@
 # =============================================================================
 # CONVERSATION - Session State and Message History
 # =============================================================================
-# Manages the active in-memory session for each Telegram chat_id.
+# Manages per-chat message history.
 #
-# Responsibilities:
-#   - Track which chat_ids are in chat mode
-#   - Store rolling message history for the active session
-#   - Seed new sessions from long-term memory
-#   - Write new messages to long-term memory
-#   - Handle session timeouts
+# Every plain-text message is handled by the AI — there is no chat mode toggle.
+# Timeout clears the history so the next message starts a fresh context.
 #
 # Relationship with memory.py:
 #   - conversation.py = fast, in-memory, current session only
@@ -25,14 +21,9 @@ from . import memory
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# SECTION 1: SESSION DATA STRUCTURE
-# =============================================================================
-
 @dataclass
 class Session:
-    """Represents one active chat session."""
-    active: bool = False
+    """Represents one chat session."""
     history: list[dict] = field(default_factory=list)
     last_activity: datetime = field(default_factory=datetime.now)
 
@@ -43,16 +34,13 @@ class Session:
         self.last_activity = datetime.now()
 
 
-# =============================================================================
-# SECTION 2: CONVERSATION MANAGER
-# =============================================================================
-
 class ConversationManager:
     """
-    Manages all active chat sessions.
+    Manages all chat sessions.
 
-    On session start: seeds history from long-term memory.
+    On first message (or after timeout): seeds history from long-term memory.
     On each message: appends to both in-memory history and long-term memory.
+    Timeout clears in-memory history — next message starts fresh.
     """
 
     def __init__(self):
@@ -63,71 +51,36 @@ class ConversationManager:
             self._sessions[chat_id] = Session()
         return self._sessions[chat_id]
 
-    # =========================================================================
-    # Mode management
-    # =========================================================================
-
-    def enter_chat_mode(self, chat_id: int):
-        """
-        Start a chat session.
-        Seeds history from the last N messages in long-term memory.
-        """
-        session = self._get_or_create(chat_id)
-        session.active = True
-        session.touch()
-
-        # Seed from long-term memory so Claude has context from past sessions
-        seed_count = getattr(config, "AI_MEMORY_SEED_MESSAGES", 10)
-        session.history = memory.get_recent(chat_id, seed_count)
-
-        if session.history:
-            logger.info(f"💬 Chat started for {chat_id}, seeded with {len(session.history)} messages")
-        else:
-            logger.info(f"💬 Chat started for {chat_id} (no prior history)")
-
-    def exit_chat_mode(self, chat_id: int):
-        """End a chat session and clear in-memory history."""
-        session = self._get_or_create(chat_id)
-        session.active = False
-        session.history = []
-        logger.info(f"🔇 Chat ended for {chat_id}")
-
-    def is_active(self, chat_id: int) -> bool:
-        """Return True if this chat_id is in chat mode and not timed out."""
+    def _check_timeout(self, chat_id: int):
+        """Clear history if session has timed out since last message."""
         session = self._sessions.get(chat_id)
-        if session is None or not session.active:
-            return False
-
-        if session.is_timed_out(config.AI_SESSION_TIMEOUT_MINUTES):
-            logger.info(f"⏰ Session timed out for {chat_id}")
-            self.exit_chat_mode(chat_id)
-            return False
-
-        return True
-
-    # =========================================================================
-    # History management
-    # =========================================================================
+        if session and session.history and session.is_timed_out(config.AI_SESSION_TIMEOUT_MINUTES):
+            session.history = []
+            logger.info(f"⏰ Session timed out for {chat_id} — history cleared")
 
     def add_user_message(self, chat_id: int, text: str):
-        """Append a user message to both session history and long-term memory."""
+        """Append a user message to session history and long-term memory."""
+        self._check_timeout(chat_id)
         session = self._get_or_create(chat_id)
-        entry = {"role": "user", "content": text}
-        session.history.append(entry)
+
+        # Seed from long-term memory if starting fresh
+        if not session.history:
+            seed_count = getattr(config, "AI_MEMORY_SEED_MESSAGES", 0)
+            if seed_count:
+                session.history = memory.get_recent(chat_id, seed_count)
+                if session.history:
+                    logger.info(f"💬 Seeded {len(session.history)} messages from memory for {chat_id}")
+
+        session.history.append({"role": "user", "content": text})
         session.touch()
         self._trim(session)
-
-        # Persist to long-term memory
         memory.append_message(chat_id, "user", text)
 
     def add_assistant_message(self, chat_id: int, text: str):
-        """Append an assistant reply to both session history and long-term memory."""
+        """Append an assistant reply to session history and long-term memory."""
         session = self._get_or_create(chat_id)
-        entry = {"role": "assistant", "content": text}
-        session.history.append(entry)
+        session.history.append({"role": "assistant", "content": text})
         session.touch()
-
-        # Persist to long-term memory
         memory.append_message(chat_id, "assistant", text)
 
     def get_history(self, chat_id: int) -> list[dict]:

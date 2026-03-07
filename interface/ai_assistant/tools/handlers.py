@@ -122,7 +122,7 @@ def _fetch_schedule(state) -> dict:
         display_name = zone_cfg["display_name"]
 
         current = schedules_module.get_current_setpoint(room=zone_id)
-        temps   = schedules_module.get_setpoint_temperatures()
+        temps   = schedules_module.get_setpoint_temperatures(room=zone_id)
         weekly  = schedules_module.get_weekly_schedule(room=zone_id)
         special = schedules_module.get_special_days(room=zone_id) or {}
 
@@ -182,10 +182,11 @@ _DATA_HANDLERS = {
 # =============================================================================
 
 def _action_set_temperature(tool_input: dict) -> dict:
-    """Change T_min and/or T_max for occupied or unoccupied state."""
+    """Change T_min and/or T_max for occupied or unoccupied state in a specific room."""
     state = tool_input.get("state")
     t_min = tool_input.get("t_min")
     t_max = tool_input.get("t_max")
+    room  = tool_input.get("room", "default")
 
     if not state:
         return {"error": "state is required"}
@@ -196,15 +197,15 @@ def _action_set_temperature(tool_input: dict) -> dict:
 
     messages = []
     if t_min is not None:
-        if not schedules_module.set_setpoint_temperature(state, float(t_min)):
+        if not schedules_module.set_setpoint_temperature(state, float(t_min), room=room):
             return {"error": f"Failed to update {state} T_min"}
         messages.append(f"T_min={t_min}°C")
     if t_max is not None:
-        if not schedules_module.set_setpoint_t_max(state, float(t_max)):
+        if not schedules_module.set_setpoint_t_max(state, float(t_max), room=room):
             return {"error": f"Failed to update {state} T_max"}
         messages.append(f"T_max={t_max}°C")
 
-    return {"success": True, "message": f"Set {state} {', '.join(messages)}"}
+    return {"success": True, "message": f"Set {state} {', '.join(messages)} for room '{room}'"}
 
 
 def _action_set_hours(tool_input: dict) -> dict:
@@ -309,9 +310,56 @@ def _action_remove_special_day(tool_input: dict) -> dict:
 
 
 # Registry: action string → handler function
+
+def _action_set_weekly_pattern(tool_input: dict) -> dict:
+    """Set occupied hours for multiple days in one call.
+
+    patterns: list of {days, occupied_ranges} where occupied_ranges is a list
+    of [start_hour, end_hour] pairs (inclusive). All hours not covered by any
+    range are set to unoccupied first.
+
+    Example:
+        patterns = [
+            {"days": ["monday","tuesday","wednesday","thursday","friday"],
+             "occupied_ranges": [[6, 6], [21, 23]]},
+            {"days": ["saturday","sunday"],
+             "occupied_ranges": [[7, 8], [21, 23]]}
+        ]
+    """
+    room     = tool_input.get("room", "default")
+    patterns = tool_input.get("patterns", [])
+
+    if not patterns:
+        return {"error": "patterns is required"}
+
+    results = []
+    for pattern in patterns:
+        days   = pattern.get("days", [])
+        ranges = pattern.get("occupied_ranges", [])
+
+        for day in days:
+            # Clear the whole day first
+            if not schedules_module.set_weekly_range(day, 0, 23, "unoccupied", room):
+                return {"error": f"Failed to clear {day}"}
+            # Set each occupied range
+            for r in ranges:
+                if len(r) != 2:
+                    return {"error": f"Each range must be [start_hour, end_hour], got {r}"}
+                start_h, end_h = r
+                if not schedules_module.set_weekly_range(day, start_h, end_h, "occupied", room):
+                    return {"error": f"Failed to set {day} {start_h}-{end_h}"}
+            results.append(day)
+
+    return {
+        "success": True,
+        "message": f"Updated weekly pattern for {len(results)} days in room '{room}': {', '.join(results)}",
+    }
+
+
 _SCHEDULE_ACTIONS = {
     "set_temperature":    _action_set_temperature,
     "set_hours":          _action_set_hours,
+    "set_weekly_pattern": _action_set_weekly_pattern,
     "copy_day":           _action_copy_day,
     "set_special_day":    _action_set_special_day,
     "remove_special_day": _action_remove_special_day,

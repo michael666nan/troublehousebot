@@ -14,6 +14,7 @@
 #
 # =============================================================================
 
+import copy
 import json
 import logging
 import os
@@ -60,24 +61,22 @@ def _create_default_schedules() -> dict:
     weekend = make_day([8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22])  # Most of day
     
     return {
-        "setpoints": {
-            "occupied":   {"T_min": 20.0, "T_max": 23.0},
-            "unoccupied": {"T_min": 17.0, "T_max": 30.0},
-        },
         "rooms": {
             "default": {
-                "weekly": {
-                    "monday": weekday.copy(),
-                    "tuesday": weekday.copy(),
-                    "wednesday": weekday.copy(),
-                    "thursday": weekday.copy(),
-                    "friday": weekday.copy(),
-                    "saturday": weekend.copy(),
-                    "sunday": weekend.copy(),
+                "setpoints": {
+                    "occupied":   {"T_min": 20.0, "T_max": 23.0},
+                    "unoccupied": {"T_min": 17.0, "T_max": 30.0},
                 },
-                "special_days": {
-                    # Example: "2024-12-25": ["unoccupied"] * 24
-                }
+                "weekly": {
+                    "monday":    weekday.copy(),
+                    "tuesday":   weekday.copy(),
+                    "wednesday": weekday.copy(),
+                    "thursday":  weekday.copy(),
+                    "friday":    weekday.copy(),
+                    "saturday":  weekend.copy(),
+                    "sunday":    weekend.copy(),
+                },
+                "special_days": {}
             }
         }
     }
@@ -94,15 +93,6 @@ def _load_schedules() -> dict:
             with open(SCHEDULES_FILE, "r") as f:
                 data = json.load(f)
                 logger.debug("📅 Schedules loaded from file")
-                # Migrate old flat setpoints to T_min/T_max format
-                migrated = False
-                for s, v in list(data.get("setpoints", {}).items()):
-                    if isinstance(v, (int, float)):
-                        data["setpoints"][s] = {"T_min": float(v), "T_max": float(v) + (5.0 if s == "occupied" else 6.0)}
-                        logger.info(f"📅 Migrated setpoint {s!r} to T_min/T_max format")
-                        migrated = True
-                if migrated:
-                    _save_schedules(data)
                 return data
         except (json.JSONDecodeError, IOError) as e:
             logger.error(f"❌ Failed to load schedules: {e}")
@@ -203,29 +193,26 @@ def get_current_setpoint(room: str = "default") -> dict | None:
         return None
     
     room_schedule = schedules["rooms"][room]
-    setpoints = schedules["setpoints"]
-    
+
     now = datetime.now()
     hour = now.hour
     day_name = DAYS_OF_WEEK[now.weekday()]
     date_str = now.strftime("%Y-%m-%d")
-    
+
     # Check special day first (priority)
     special_days = room_schedule.get("special_days", {})
     if date_str in special_days:
         state = special_days[date_str][hour]
         source = "special_day"
     else:
-        # Use weekly schedule
         weekly = room_schedule.get("weekly", {})
         if day_name not in weekly:
             logger.error(f"❌ Day '{day_name}' not in weekly schedule")
             return None
         state = weekly[day_name][hour]
         source = "weekly"
-    
-    # Get T_min and T_max for this state
-    sp    = _get_sp({"setpoints": setpoints}, state)
+
+    sp    = _get_sp(room_schedule, state)
     T_min = sp["T_min"]
     T_max = sp["T_max"]
 
@@ -281,7 +268,6 @@ def get_setpoint_horizon(steps: int, room: str = "default") -> dict | None:
         return None
 
     room_schedule = schedules["rooms"][room]
-    setpoints     = schedules["setpoints"]
 
     # Next 15-min boundary (one step ahead of current 15-min boundary)
     now            = datetime.now()
@@ -313,7 +299,7 @@ def get_setpoint_horizon(steps: int, room: str = "default") -> dict | None:
         else:
             state = room_schedule["weekly"][day_name][hour]
 
-        sp    = _get_sp({"setpoints": setpoints}, state)
+        sp    = _get_sp(room_schedule, state)
         T_min = sp["T_min"]
         T_max = sp["T_max"]
 
@@ -335,10 +321,11 @@ def get_rooms() -> list[str]:
     return list(schedules.get("rooms", {}).keys())
 
 
-def get_setpoint_temperatures() -> dict:
-    """Get the temperature values for each state."""
+def get_setpoint_temperatures(room: str = "default") -> dict:
+    """Get the temperature values for each state, per room."""
     schedules = _get_schedules()
-    return schedules.get("setpoints", {}).copy()
+    room = _resolve_room(room)
+    return schedules["rooms"][room].get("setpoints", {}).copy()
 
 
 def get_weekly_schedule(room: str = "default") -> dict | None:
@@ -361,11 +348,16 @@ def get_special_days(room: str = "default") -> dict | None:
 # SECTION 5: WRITE FUNCTIONS (for chatbot tools)
 # =============================================================================
 
-def _get_sp(schedules: dict, state: str) -> dict:
-    """Return the setpoint dict for a state, migrating flat values if needed."""
-    sp = schedules["setpoints"].get(state, {})
-    if not isinstance(sp, dict):
-        sp = {"T_min": float(sp), "T_max": float(sp) + 5.0}
+_DEFAULT_SETPOINTS = {
+    "occupied":   {"T_min": 20.0, "T_max": 23.0},
+    "unoccupied": {"T_min": 17.0, "T_max": 30.0},
+}
+
+def _get_sp(room: dict, state: str) -> dict:
+    """Return the setpoint dict for a state, falling back to defaults."""
+    sp = room.get("setpoints", {}).get(state)
+    if not isinstance(sp, dict) or "T_min" not in sp or "T_max" not in sp:
+        return copy.deepcopy(_DEFAULT_SETPOINTS[state])
     return sp
 
 
@@ -390,63 +382,59 @@ def _validate_setpoint(sp: dict, state: str) -> str | None:
     return None
 
 
-def set_setpoint_temperature(state: State, temperature: float) -> bool:
+def set_setpoint_temperature(state: State, temperature: float, room: str = "default") -> bool:
     """
-    Set T_min (lower comfort bound) for a state.
+    Set T_min (lower comfort bound) for a state in a specific room.
 
     Args:
         state:       "occupied" or "unoccupied"
         temperature: New T_min value in °C
-
-    Returns:
-        True if successful, False if validation fails or state is invalid.
-
-    Example (chatbot):
-        "Set the occupied minimum temperature to 21 degrees"
-        → set_setpoint_temperature("occupied", 21.0)
+        room:        Room/zone to update (default: "default")
     """
     if state not in VALID_STATES:
         logger.error(f"❌ Invalid state: {state}")
         return False
     schedules = _get_schedules()
-    sp = _get_sp(schedules, state)
+    room = _resolve_room(room)
+    room_data = schedules["rooms"][room]
+    if "setpoints" not in room_data:
+        room_data["setpoints"] = copy.deepcopy(schedules["rooms"]["default"].get("setpoints", {}))
+    sp = _get_sp(room_data, state)
     sp["T_min"] = float(temperature)
     err = _validate_setpoint(sp, state)
     if err:
         logger.error(f"❌ {err}")
         return False
-    schedules["setpoints"][state] = sp
-    logger.info(f"📅 Set {state} T_min to {temperature}°C")
+    room_data["setpoints"][state] = sp
+    logger.info(f"📅 Set {state} T_min to {temperature}°C for room '{room}'")
     return _update_schedules(schedules)
 
 
-def set_setpoint_t_max(state: State, temperature: float) -> bool:
+def set_setpoint_t_max(state: State, temperature: float, room: str = "default") -> bool:
     """
-    Set T_max (upper comfort bound) for a state.
+    Set T_max (upper comfort bound) for a state in a specific room.
 
     Args:
         state:       "occupied" or "unoccupied"
         temperature: New T_max value in °C
-
-    Returns:
-        True if successful, False if validation fails or state is invalid.
-
-    Example (chatbot):
-        "Set the occupied maximum temperature to 23 degrees"
-        → set_setpoint_t_max("occupied", 23.0)
+        room:        Room/zone to update (default: "default")
     """
     if state not in VALID_STATES:
         logger.error(f"❌ Invalid state: {state}")
         return False
     schedules = _get_schedules()
-    sp = _get_sp(schedules, state)
+    room = _resolve_room(room)
+    room_data = schedules["rooms"][room]
+    if "setpoints" not in room_data:
+        room_data["setpoints"] = copy.deepcopy(schedules["rooms"]["default"].get("setpoints", {}))
+    sp = _get_sp(room_data, state)
     sp["T_max"] = float(temperature)
     err = _validate_setpoint(sp, state)
     if err:
         logger.error(f"❌ {err}")
         return False
-    schedules["setpoints"][state] = sp
-    logger.info(f"📅 Set {state} T_max to {temperature}°C")
+    room_data["setpoints"][state] = sp
+    logger.info(f"📅 Set {state} T_max to {temperature}°C for room '{room}'")
     return _update_schedules(schedules)
 
 
@@ -724,12 +712,11 @@ def ensure_room_exists(room: str, copy_from: str = "default") -> None:
     If not, create it by copying from copy_from (default: "default").
     Called automatically at startup for each configured zone.
     """
-    import copy as _copy
     schedules = _get_schedules()
     if room in schedules.get("rooms", {}):
         return
     source = schedules["rooms"].get(copy_from) or schedules["rooms"].get("default", {})
-    schedules["rooms"][room] = _copy.deepcopy(source)
+    schedules["rooms"][room] = copy.deepcopy(source)
     _save_schedules(schedules)
     logger.info(f"Created schedule room '{room}' (copied from '{copy_from}')")
 
@@ -752,8 +739,6 @@ def add_room(room: str, copy_from: str = "default") -> bool:
         logger.error(f"❌ Source room '{copy_from}' not found")
         return False
     
-    # Deep copy the source room
-    import copy
     schedules["rooms"][room] = copy.deepcopy(schedules["rooms"][copy_from])
     
     logger.info(f"📅 Added room '{room}' (copied from '{copy_from}')")

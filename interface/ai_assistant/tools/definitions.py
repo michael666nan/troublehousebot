@@ -23,7 +23,7 @@ TOOL_DEFINITIONS = [
         "description": (
             "Fetch live data from the home system. "
             "Pass a list of data types to retrieve everything needed in one call. "
-            "Always fetch current data before proposing any schedule changes."
+            "Only include 'schedule' when the user is adjusting specific existing hours. Do NOT fetch 'schedule' when the user wants to create or redesign a schedule — in that case propose one directly without fetching."
         ),
         "input_schema": {
             "type": "object",
@@ -54,7 +54,7 @@ TOOL_DEFINITIONS = [
         "name": "update_schedule",
         "description": (
             "Modify the heating schedule. "
-            "IMPORTANT: Always fetch schedule data first, then propose the change to the user "
+            "IMPORTANT: Only fetch current schedule data if adjusting specific existing hours. "
             "and wait for explicit confirmation before calling this tool. "
             "Never call this tool without user confirmation in the current message. "
             "\n\nActions and their required parameters:"
@@ -91,11 +91,16 @@ TOOL_DEFINITIONS = [
                     "enum": [
                         "set_temperature",
                         "set_hours",
+                        "set_weekly_pattern",
                         "copy_day",
                         "set_special_day",
                         "remove_special_day",
                     ],
-                    "description": "The schedule action to perform.",
+                    "description": (
+                        "The schedule action to perform. "
+                        "Use set_weekly_pattern to set a full weekly schedule in one call — "
+                        "prefer this over multiple set_hours calls when changing multiple days."
+                    ),
                 },
                 "state": {
                     "type": "string",
@@ -146,6 +151,16 @@ TOOL_DEFINITIONS = [
                 "room": {
                     "type": "string",
                     "description": "Room name (default: 'default').",
+                },
+                "patterns": {
+                    "type": "array",
+                    "description": (
+                        "For set_weekly_pattern: list of patterns, each with "
+                        "'days' (list of day names) and 'occupied_ranges' "
+                        "(list of [start_hour, end_hour] pairs, inclusive). "
+                        "All other hours are set to unoccupied automatically. "
+                        "Example: [{'days': ['monday','tuesday'], 'occupied_ranges': [[6,6],[21,23]]}]"
+                    ),
                 },
             },
             "required": ["action"],
@@ -335,5 +350,6 @@ TOOL_DEFINITIONS = [
             "required": ["series", "time_range"],
         },
     },
+
 
 ]

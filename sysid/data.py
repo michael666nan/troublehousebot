@@ -115,10 +115,13 @@ def _fetch_raw(
     field: str,
     start: datetime,
     stop: datetime,
+    zone_id: str | None = None,
 ) -> tuple[list[datetime], list[float]]:
     """
     Fetch raw (non-aggregated) data from InfluxDB.
     Returns only actual measurements — no empty windows.
+
+    If zone_id is provided, filters by tag zone=zone_id.
     """
     try:
         from influxdb_client import InfluxDBClient
@@ -132,11 +135,14 @@ def _fetch_raw(
         start_s = start.strftime("%Y-%m-%dT%H:%M:%SZ")
         stop_s  = stop.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+        zone_filter = f'|> filter(fn: (r) => r.zone == "{zone_id}")' if zone_id else ""
+
         query = f'''
 from(bucket: "{config.INFLUXDB_BUCKET}")
   |> range(start: {start_s}, stop: {stop_s})
   |> filter(fn: (r) => r._measurement == "{measurement}")
   |> filter(fn: (r) => r._field == "{field}")
+  {zone_filter}
   |> yield(name: "raw")
 '''
         tables = client.query_api().query(query)
@@ -150,7 +156,7 @@ from(bucket: "{config.INFLUXDB_BUCKET}")
                     values.append(float(v))
 
         client.close()
-        logger.debug(f"  {measurement}.{field}: {len(times)} raw points")
+        logger.debug(f"  {measurement}.{field} (zone={zone_id}): {len(times)} raw points")
         return times, values
 
     except Exception as e:
@@ -259,10 +265,12 @@ def fetch_id_data(
     if zone_id is None:
         zone_id = config.get_first_zone_id()
 
-    zone_cfg   = config.ZONES[zone_id]
-    devices    = zone_cfg["devices"]
-    room_sensor  = devices.get("room_temp", "sensor_1")
-    radiator_key = zone_cfg.get("radiator", {}).get("name", f"{zone_id}_radiator_output")
+    zone_cfg     = config.ZONES[zone_id]
+    radiator_key = zone_cfg.get("radiator", {}).get("name", "radiator_output")
+
+    # Use role-based measurement names with zone tag for zone devices.
+    # "room_temp" + zone=zone_1 tag instead of device name "zone_1_room_temp".
+    room_measurement = "room_temp"
 
     if dt_minutes is None:
         dt_minutes = zone_cfg["mpc"]["dt_minutes"]
@@ -280,10 +288,10 @@ def fetch_id_data(
 
     # Fetch all four signals
     signals = {
-        "y":      _fetch_raw(room_sensor,       "temperature", start, stop),
-        "T_amb":  _fetch_raw("outside_weather", "temp",        start, stop),
-        "P_sol":  _fetch_raw("outside_weather", "solar_ghi",   start, stop),
-        "P_heat": _fetch_raw(radiator_key,      "watts",       start, stop),
+        "y":      _fetch_raw(room_measurement, "temperature", start, stop, zone_id=zone_id),
+        "T_amb":  _fetch_raw("outside_weather", "temp",       start, stop),
+        "P_sol":  _fetch_raw("outside_weather", "solar_ghi",  start, stop),
+        "P_heat": _fetch_raw(radiator_key,      "watts",      start, stop, zone_id=zone_id),
     }
 
     # Need at least indoor temperature
@@ -306,9 +314,9 @@ def fetch_id_data(
     # Fetch y from one extra step before grid_start_ext so the raw data
     # available near grid_start is not "stolen" by the y0 grid point.
     fetch_start_y = grid_start_ext - timedelta(seconds=dt_seconds)
-    signals_y_wide = _fetch_raw(room_sensor, "temperature",
+    signals_y_wide = _fetch_raw(room_measurement, "temperature",
                                 fetch_start_y.replace(tzinfo=timezone.utc),
-                                stop)
+                                stop, zone_id=zone_id)
 
     # y on extended grid (N+1 points: t_{-1} to t_{N-1} in input terms → t_0 to t_N)
     y_arr_ext, times_ext = _resample(

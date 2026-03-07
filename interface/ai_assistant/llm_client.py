@@ -58,12 +58,21 @@ def get_reply(
         kwargs = dict(
             model=config.AI_MODEL,
             max_tokens=config.AI_MAX_TOKENS,
-            system=system_prompt,
+            # Cache the system prompt — it's large and nearly identical every call
+            system=[{
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }],
             messages=history,
         )
 
         if tools:
-            kwargs["tools"] = tools
+            # Cache tool definitions — they never change at runtime
+            cached_tools = list(tools)
+            if cached_tools:
+                cached_tools[-1] = dict(cached_tools[-1], cache_control={"type": "ephemeral"})
+            kwargs["tools"] = cached_tools
 
         response = client.messages.create(**kwargs)
 

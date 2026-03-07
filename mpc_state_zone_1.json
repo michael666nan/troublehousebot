@@ -1,10 +1,11 @@
 {
   "x_hat": [
-    20.580270706074124,
-    21.54579287982446
+    20.206807653429394,
+    21.17192688738428
   ],
-  "last_update": "2026-03-07T13:00:05.506974",
-  "last_y_measured": 20.63,
-  "last_u": 109.8,
-  "last_chart_path": "/home/michael/troublehousebot/mpc_forecast_20260307_1300.html"
+  "last_update": "2026-03-07T20:45:05.320719",
+  "last_y_measured": 20.2,
+  "last_u": 133.9,
+  "last_chart_path": "/home/michael/troublehousebot/mpc_forecast_20260307_2045.html",
+  "last_innovation": -0.036195854960134
 }

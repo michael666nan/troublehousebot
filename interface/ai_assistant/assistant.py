@@ -5,8 +5,6 @@
 # Wires together conversation, memory, context, tools, and LLM.
 #
 # Public interface:
-#   assistant.enter_chat_mode(chat_id)      -> str
-#   assistant.exit_chat_mode(chat_id)       -> str
 #   assistant.handle_message(chat_id, text) -> AssistantResponse
 #
 # AssistantResponse is a dataclass with:
@@ -38,7 +36,7 @@ from . import memory
 
 logger = logging.getLogger(__name__)
 
-_MAX_TOOL_ROUNDS = 5
+_MAX_TOOL_ROUNDS = 10
 
 
 @dataclass
@@ -65,33 +63,12 @@ class AIAssistant:
     # Public interface
     # =========================================================================
 
-    def enter_chat_mode(self, chat_id: int) -> str:
-        self._conversation.enter_chat_mode(chat_id)
-        return (
-            "🤖 <b>AI Assistant active</b>\n\n"
-            "Ask me anything about the heating system, energy prices, weather, "
-            "or ask me to plot historical data.\n\n"
-            "Type /exit to return to normal commands."
-        )
-
-    def exit_chat_mode(self, chat_id: int) -> str:
-        self._conversation.exit_chat_mode(chat_id)
-        return "👋 Exited AI chat mode. Normal commands are active again."
-
-    async def handle_message(self, chat_id: int, text: str) -> AssistantResponse | None:
-        """
-        Handle an incoming plain-text message.
-
-        Returns AssistantResponse (text + optional document paths),
-        or None if not in chat mode.
-        """
-        if not self._conversation.is_active(chat_id):
-            return None
-
+    async def handle_message(self, chat_id: int, text: str) -> AssistantResponse:
+        """Handle an incoming plain-text message."""
         self._conversation.add_user_message(chat_id, text)
 
         system_prompt = build_system_prompt(self._state)
-        history       = self._conversation.get_history(chat_id)
+        history       = self._strip_tool_exchanges(self._conversation.get_history(chat_id))
 
         response = await asyncio.get_event_loop().run_in_executor(
             None,
@@ -103,6 +80,22 @@ class AIAssistant:
 
         self._conversation.add_assistant_message(chat_id, response.text)
         return response
+
+    @staticmethod
+    def _strip_tool_exchanges(history: list[dict]) -> list[dict]:
+        """Return only plain text user/assistant turns, dropping tool_use and tool_result blocks."""
+        clean = []
+        for msg in history:
+            content = msg.get("content")
+            if isinstance(content, str):
+                clean.append(msg)
+            elif isinstance(content, list):
+                # Keep only text blocks, skip tool_use / tool_result
+                text_blocks = [b for b in content if isinstance(b, dict) and b.get("type") == "text"]
+                if text_blocks:
+                    clean.append({"role": msg["role"], "content": text_blocks[0]["text"]
+                                  if len(text_blocks) == 1 else text_blocks})
+        return clean
 
     # =========================================================================
     # Tool call loop

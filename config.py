@@ -84,15 +84,15 @@ ALLOWED_USERS = [8425877402]
 ZONES = {
     "zone_1": {
         # ---- Identity --------------------------------------------------------
-        "display_name": "Living Room",
+        "display_name": "Office",
 
         # ---- Devices ---------------------------------------------------------
         # Values must match Zigbee2MQTT friendly names exactly.
         "devices": {
-            "thermostat":  "thermostat_1",
-            "room_temp":   "sensor_1",
-            "supply_temp": "sensor_2",
-            "return_temp": "sensor_3",
+            "thermostat":  "zone_1_thermostat",
+            "room_temp":   "zone_1_room_temp",
+            "supply_temp": "zone_1_supply_temp",
+            "return_temp": "zone_1_return_temp",
         },
 
         # ---- Thermostat settings (sent on startup) ---------------------------
@@ -105,7 +105,7 @@ ZONES = {
 
         # ---- Radiator physics ------------------------------------------------
         "radiator": {
-            "name":      "radiator_1_output",   # used as InfluxDB measurement name
+            "name":      "radiator_output",   # InfluxDB measurement name (zone tag added automatically)
             "rad_type":  22,
             "height_mm": 600,
             "length_m":  1.2,
@@ -122,9 +122,64 @@ ZONES = {
         },
 
         # ---- Grey-box thermal model (2R2C) initial parameters ----------------
-        # States: x = [Ti, Tm]  (indoor air temp, thermal mass temp)
-        # Inputs: u = [Ta, Phi_s, Phi_h]  (ambient, solar, heating)
-        # These are the starting point -- system identification will refine them.
+        "mpc_model": {
+            "A":   10.0,
+            "ha":   0.5,
+            "hm":   2.0,
+            "ci":  10.0,
+            "cm": 100.0,
+            "p":    0.5,
+            "gA":   0.0,
+            "K":  [0.5, 0.1],
+            "x0": [20.0, 18.0],
+        },
+    },
+
+    "zone_2": {
+        # ---- Identity --------------------------------------------------------
+        "display_name": "Bedroom",           # ← change to actual room name
+
+        # ---- Devices ---------------------------------------------------------
+        # Set these to match your Zigbee2MQTT friendly names exactly.
+        # Remove roles that don't exist in this zone (e.g. supply/return temp).
+        "devices": {
+            "thermostat":  "zone_2_thermostat",
+            "room_temp":   "zone_2_room_temp",
+            # "supply_temp": "zone_2_supply_temp",   # uncomment if available
+            # "return_temp": "zone_2_return_temp",   # uncomment if available
+        },
+
+        # ---- Thermostat settings (sent on startup) ---------------------------
+        "thermostat_settings": {
+            "radiator_covered":       True,
+            "window_open_feature":    False,
+            "heat_available":         True,
+            "algorithm_scale_factor": 5,
+        },
+
+        # ---- Radiator physics ------------------------------------------------
+        # Adjust rad_type, height_mm, length_m to match the actual radiator.
+        # See EN 442 panel types in the comment block above ZONES.
+        "radiator": {
+            "name":      "radiator_output",
+            "rad_type":  22,
+            "height_mm": 600,
+            "length_m":  1.0,
+            "n":         1.3,
+        },
+
+        # ---- MPC settings ----------------------------------------------------
+        # Start with enabled: False until sysid has been run for this zone.
+        "mpc": {
+            "enabled":       False,
+            "dt_minutes":    15,
+            "horizon_hours": 48,
+            "cop":           4.0,
+            "slack_penalty": 1e4,
+        },
+
+        # ---- Grey-box thermal model (2R2C) initial parameters ----------------
+        # These are reasonable defaults — run /sysid to refine them.
         "mpc_model": {
             "A":   10.0,
             "ha":   0.5,
@@ -139,18 +194,13 @@ ZONES = {
     },
 
     # ---- Add more zones here -------------------------------------------------
-    # "zone_2": {
-    #     "display_name": "Bedroom",
+    # "zone_3": {
+    #     "display_name": "Office",
     #     "devices": {
-    #         "thermostat": "bedroom_thermostat",
-    #         "room_temp":  "bedroom_temp",
+    #         "thermostat": "zone_3_thermostat",
+    #         "room_temp":  "zone_3_room_temp",
     #     },
-    #     "thermostat_settings": { ... },
-    #     "radiator": { "rad_type": 11, "height_mm": 400, "length_m": 0.8, "n": 1.3 },
-    #     "mpc": { "enabled": False, "dt_minutes": 15, "horizon_hours": 48,
-    #              "cop": 4.0, "slack_penalty": 1e4 },
-    #     "mpc_model": { "A": 15.0, "ha": 0.5, "hm": 2.0, "ci": 10.0, "cm": 100.0,
-    #                    "p": 0.5, "gA": 0.0, "K": [0.5, 0.1], "x0": [20.0, 18.0] },
+    #     ...
     # },
 }
 
@@ -228,7 +278,7 @@ WEATHER_UPDATE_INTERVAL = 900   # seconds (15 minutes)
 # SECTION 8: AI ASSISTANT
 # =============================================================================
 
-AI_MODEL                   = "claude-opus-4-6"
+AI_MODEL                   = "claude-sonnet-4-6"
 AI_MAX_TOKENS              = 1024
 AI_MAX_HISTORY_MESSAGES    = 20
 AI_MEMORY_SEED_MESSAGES    = 0
@@ -261,6 +311,26 @@ def get_zone_for_device(device_name: str) -> str | None:
     """Return the zone_id that owns a given device name, or None."""
     for zone_id, zone_cfg in ZONES.items():
         if device_name in zone_cfg["devices"].values():
+            return zone_id
+    return None
+
+
+def get_role_for_device(device_name: str) -> str | None:
+    """Return the role (e.g. 'room_temp') for a given device name, or None."""
+    for zone_cfg in ZONES.values():
+        for role, name in zone_cfg["devices"].items():
+            if name == device_name:
+                return role
+    return None
+
+
+def get_zone_for_derived(derived_name: str) -> str | None:
+    """
+    Return the zone_id for a derived state key (e.g. "zone_1_radiator_output").
+    The state key is always zone-scoped: {zone_id}_radiator_output.
+    """
+    for zone_id in ZONES:
+        if derived_name == f"{zone_id}_radiator_output":
             return zone_id
     return None
 

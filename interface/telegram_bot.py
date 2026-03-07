@@ -73,7 +73,6 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id):
         return
 
-    from main import _zones
     zone_ids    = config.get_zone_ids()
     weather_data = state.get_weather()
 
@@ -96,8 +95,9 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"🌡️ <b>{zone.display_name} — Thermostat</b>\n"
         msg += f"Current: <code>{thermostat.get('local_temperature', 'N/A')}°C</code>\n"
         msg += f"Target: <code>{thermostat.get('occupied_heating_setpoint', 'N/A')}°C</code>\n"
-        watts = radiator.get("watts", "N/A")
-        msg += f"🔥 Radiator: <code>{watts} W</code>\n"
+        watts = radiator.get("watts")
+        watts_str = f"{watts:.0f} W" if watts is not None else "N/A"
+        msg += f"🔥 Radiator: <code>{watts_str}</code>\n"
 
         sensor_roles = ["room_temp", "supply_temp", "return_temp"]
         for role in sensor_roles:
@@ -167,7 +167,6 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         thermostat_name = zone.get("thermostat", {}).get("name") if zone else None
         # Fallback: get from Zone object if available
         if not thermostat_name:
-            from main import _zones
             z = _zones.get(zone_id)
             thermostat_name = z.thermostat_name if z else None
 
@@ -237,8 +236,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += "/sysid reject — Discard last result\n"
 
     msg += "\n<b>AI Assistant</b>\n"
-    msg += "/chat — Start conversational AI assistant\n"
-    msg += "/exit — End AI assistant session\n"
+    msg += "Just type any message to chat with the AI assistant.\n"
+    msg += "/plot — Generate a historical data chart\n"
 
     await update.message.reply_text(msg, parse_mode="HTML")
 
@@ -320,8 +319,10 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     source_info = " (special day)" if current["source"] == "special_day" else ""
     msg += f"<b>Now:</b> {state_emoji} {current['setpoint']}°C ({current['state']}{source_info})\n\n"
 
-    temps = schedules.get_setpoint_temperatures()
-    msg += f"<b>Setpoints:</b> 🏠 {temps.get('occupied', '?')}°C | 🌙 {temps.get('unoccupied', '?')}°C\n\n"
+    temps = schedules.get_setpoint_temperatures(room=zone_id)
+    occ_min  = temps.get('occupied',   {}).get('T_min', '?')
+    unocc_min = temps.get('unoccupied', {}).get('T_min', '?')
+    msg += f"<b>Setpoints:</b> 🏠 {occ_min}°C | 🌙 {unocc_min}°C\n\n"
     msg += f"<b>Next {hours} hours:</b>\n"
 
     from datetime import datetime
@@ -453,7 +454,6 @@ async def cmd_mpc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚡ Running MPC optimization...")
         try:
             from control.radiator import Radiator, supply_temp_from_outdoor
-            from main import _zones
             zone      = _zones.get(zone_id) or _default_zone()
             weather   = state.get_weather()
             t_outdoor = weather.get("temp", 0.0) if weather else 0.0
@@ -765,30 +765,7 @@ async def cmd_sysid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # =============================================================================
 # SECTION 6: AI ASSISTANT COMMANDS
-# /chat, /exit, /plot
 # =============================================================================
-
-async def cmd_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /chat - Enter AI assistant chat mode.
-    """
-    if not is_allowed(update.effective_user.id):
-        return
-
-    reply = _assistant.enter_chat_mode(update.effective_chat.id)
-    await update.message.reply_text(reply, parse_mode="HTML")
-
-
-async def cmd_exit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /exit - Exit AI assistant chat mode.
-    """
-    if not is_allowed(update.effective_user.id):
-        return
-
-    reply = _assistant.exit_chat_mode(update.effective_chat.id)
-    await update.message.reply_text(reply)
-
 
 async def _send_chart(update: Update, path: str, title: str) -> None:
     """Send a Plotly HTML chart as a Telegram document, then delete the temp file."""
@@ -854,10 +831,7 @@ def _strip_unknown_html(text: str) -> str:
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Handle plain text messages (not commands).
-    Forwards to AI assistant if in chat mode, otherwise ignores.
-    """
+    """Handle plain text messages — always forwarded to AI assistant."""
     if not is_allowed(update.effective_user.id):
         return
 
@@ -865,9 +839,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update.effective_chat.id,
         update.message.text,
     )
-
-    if response is None:
-        return
 
     # Send any charts first (they provide context for the text reply)
     for path in response.documents:
@@ -913,12 +884,10 @@ def create_bot(assistant, zones: dict) -> Application:
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("start", cmd_help))
 
-    # AI assistant commands
+    # AI assistant
     app.add_handler(CommandHandler("plot", cmd_plot))
-    app.add_handler(CommandHandler("chat", cmd_chat))
-    app.add_handler(CommandHandler("exit", cmd_exit))
 
-    # Plain text handler (for AI chat mode)
+    # Plain text handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("✅ Telegram bot configured")
