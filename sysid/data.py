@@ -3,10 +3,10 @@
 # =============================================================================
 #
 # Fetches and aligns the four signals needed for PEM identification:
-#   y      : Indoor temperature [°C]      — sensor_1.temperature
+#   y      : Indoor temperature [°C]      — zone room_temp sensor
 #   T_amb  : Outdoor temperature [°C]     — outside_weather.temp
 #   P_sol  : Solar irradiance [W/m²]      — outside_weather.solar_ghi
-#   P_heat : Radiator output [W]          — radiator_1_output.watts
+#   P_heat : Radiator output [W]          — {zone_id}_radiator_output.watts
 #
 # Strategy:
 #   - Fetch raw (createEmpty: false) — no phantom NaNs from unchanged sensors
@@ -15,7 +15,7 @@
 #   - Gaps beyond limit kept as NaN — identification windows skip them
 #
 # Public interface:
-#   fetch_id_data(hours_back, dt_minutes) -> IdData | None
+#   fetch_id_data(zone_id, hours_back, dt_minutes) -> IdData | None
 # =============================================================================
 
 import logging
@@ -157,7 +157,6 @@ from(bucket: "{config.INFLUXDB_BUCKET}")
         logger.error(f"InfluxDB fetch failed ({measurement}.{field}): {e}")
         return [], []
 
-
 # =============================================================================
 # RESAMPLE + INTERPOLATE
 # =============================================================================
@@ -239,6 +238,7 @@ def _resample(
 # =============================================================================
 
 def fetch_id_data(
+    zone_id: str | None = None,
     hours_back: float = 48.0,
     dt_minutes: int | None = None,
     max_gap_minutes: float = 60.0,
@@ -247,6 +247,7 @@ def fetch_id_data(
     Fetch and align all signals needed for system identification.
 
     Args:
+        zone_id:         Zone to identify (default: first configured zone)
         hours_back:      How many hours of data to fetch
         dt_minutes:      Resampling interval (default: MPC dt from config)
         max_gap_minutes: Gaps shorter than this are interpolated.
@@ -255,8 +256,16 @@ def fetch_id_data(
     Returns:
         IdData with aligned arrays on a regular grid, or None on failure.
     """
+    if zone_id is None:
+        zone_id = config.get_first_zone_id()
+
+    zone_cfg   = config.ZONES[zone_id]
+    devices    = zone_cfg["devices"]
+    room_sensor  = devices.get("room_temp", "sensor_1")
+    radiator_key = zone_cfg.get("radiator", {}).get("name", f"{zone_id}_radiator_output")
+
     if dt_minutes is None:
-        dt_minutes = config.ZONES[config.get_first_zone_id()]["mpc"]["dt_minutes"]
+        dt_minutes = zone_cfg["mpc"]["dt_minutes"]
 
     dt_seconds      = dt_minutes * 60
     max_gap_seconds = max_gap_minutes * 60
@@ -265,16 +274,16 @@ def fetch_id_data(
     start = stop - timedelta(hours=hours_back)
 
     logger.info(
-        f"Fetching {hours_back:.1f}h of ID data "
-        f"({start.strftime('%Y-%m-%d %H:%M')} → {stop.strftime('%Y-%m-%d %H:%M')} UTC)"
+        f"Fetching {hours_back:.1f}h of ID data for zone '{zone_id}' "
+        f"({start.strftime('%Y-%m-%d %H:%M')} -> {stop.strftime('%Y-%m-%d %H:%M')} UTC)"
     )
 
     # Fetch all four signals
     signals = {
-        "y":      _fetch_raw("sensor_1",        "temperature", start, stop),
+        "y":      _fetch_raw(room_sensor,       "temperature", start, stop),
         "T_amb":  _fetch_raw("outside_weather", "temp",        start, stop),
         "P_sol":  _fetch_raw("outside_weather", "solar_ghi",   start, stop),
-        "P_heat": _fetch_raw("radiator_1_output","watts",       start, stop),
+        "P_heat": _fetch_raw(radiator_key,      "watts",       start, stop),
     }
 
     # Need at least indoor temperature
@@ -297,7 +306,7 @@ def fetch_id_data(
     # Fetch y from one extra step before grid_start_ext so the raw data
     # available near grid_start is not "stolen" by the y0 grid point.
     fetch_start_y = grid_start_ext - timedelta(seconds=dt_seconds)
-    signals_y_wide = _fetch_raw("sensor_1", "temperature",
+    signals_y_wide = _fetch_raw(room_sensor, "temperature",
                                 fetch_start_y.replace(tzinfo=timezone.utc),
                                 stop)
 

@@ -312,7 +312,7 @@ def estimate_state(y_measured: float, u_prev: float) -> np.ndarray:
     A, B, C, K = model["A"], model["B"], model["C"], model["K"]
 
     # Previous posterior state
-    x_post_prev = get_state()["x_hat"].reshape(2, 1)
+    x_post_prev = np.array(get_state()["x_hat"]).reshape(2, 1)
 
     # Current weather (used as input u[k-1])
     weather = state.get_weather()
@@ -538,7 +538,7 @@ def run_mpc_step(zone_id: str, max_heat: float = 1000.0, save_plot_flag: bool = 
         logger.error(f"No indoor temperature for zone '{zone_id}'")
         return None
 
-    derived_key = f"{zone_id}_radiator_output"
+    derived_key = config.ZONES[zone_id].get("radiator", {}).get("name", f"{zone_id}_radiator_output")
     derived     = state.get_derived(derived_key)
     u_prev      = derived.get("watts", 0.0) if derived else 0.0
 

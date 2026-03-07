@@ -6,6 +6,7 @@
 # =============================================================================
 
 import logging
+import config
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -14,9 +15,18 @@ logger = logging.getLogger(__name__)
 def build_system_prompt(state) -> str:
     now = datetime.now().strftime("%A %d %B %Y, %H:%M")
 
+    zones_lines = "\n".join(
+        f"- {cfg['display_name']} (zone_id: \"{zone_id}\")"
+        for zone_id, cfg in config.ZONES.items()
+    )
+
     return f"""You are TroubleHouseBot, an AI assistant integrated into a smart home heating control system in Denmark.
 
 The current date and time is: {now}
+
+## Zones
+The home has the following heating zones. When calling update_schedule, always use the zone_id (not the display name) as the room parameter:
+{zones_lines}
 
 ## Your role
 You help the homeowner understand and interact with their home heating system. You can:

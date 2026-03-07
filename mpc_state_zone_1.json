@@ -1,0 +1,10 @@
+{
+  "x_hat": [
+    20.21755779343575,
+    21.76224157357345
+  ],
+  "last_update": "2026-03-07T07:45:05.901378",
+  "last_y_measured": 20.2,
+  "last_u": 47.3,
+  "last_chart_path": "/home/michael/troublehousebot/mpc_forecast_20260307_0745.html"
+}

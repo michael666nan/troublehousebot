@@ -22,7 +22,7 @@ def _fmt(label, value, unit="", ok=True):
     return f"  {tag} {label}: {value} {unit}".rstrip()
 
 
-def run_tests(data) -> str:
+def run_tests(data, zone_id: str | None = None) -> str:
     """
     Run all tests on provided IdData.
     Returns a formatted HTML report.
@@ -33,13 +33,16 @@ def run_tests(data) -> str:
     from sysid.estimator import run_pem, _make_cost
 
     model_def = get_model_def(DEFAULT_MODEL)
-    A_floor   = cfg.MPC_MODEL["A"]
+    A_floor   = cfg.ZONES[cfg.get_first_zone_id()]["mpc_model"]["A"]
 
     lines = [f"🔬 <b>SysID Test Report [{model_def.name}]</b>", ""]
 
     # Build prior from model_store
+    import config
+    if zone_id is None:
+        zone_id = config.get_first_zone_id()
     from control import model_store
-    stored = model_store.load(config.get_first_zone_id())
+    stored = model_store.load(zone_id)
     prior  = {k: stored.get(k, (model_def.param_bounds[k][0] + model_def.param_bounds[k][1]) / 2)
               for k in model_def.param_names}
 
@@ -76,10 +79,11 @@ def run_tests(data) -> str:
     # =========================================================================
     lines.append("<b>Test 2: open_simulate() with prior</b>")
     try:
+        from sysid.estimator import _estimate_x0
         n     = model_def.n_states
         K0    = np.zeros((n, 1))
         model = model_def.build(prior, A_floor, data.dt_seconds, K0)
-        x0    = np.full(n, data.y0)
+        x0    = _estimate_x0(model, data)
 
         y_pred, X = open_simulate(model, data, x0)
 
@@ -108,12 +112,13 @@ def run_tests(data) -> str:
     # =========================================================================
     lines.append("<b>Test 3: filter_simulate()</b>")
     try:
+        from sysid.estimator import _estimate_x0
         n  = model_def.n_states
-        x0 = np.full(n, data.y0)
 
         # K=0: filter should match open-loop
         K_zero = np.zeros((n, 1))
         m_nok  = model_def.build(prior, A_floor, data.dt_seconds, K_zero)
+        x0     = _estimate_x0(m_nok, data)
         innov_nok, _ = filter_simulate(m_nok, data, x0)
         y_open,   _  = open_simulate(m_nok, data, x0)
         diff = float(np.max(np.abs(innov_nok - (data.y - y_open))))
@@ -151,8 +156,6 @@ def run_tests(data) -> str:
         prior_full = dict(prior)
         for kn in model_def.kalman_names():
             prior_full[kn] = 0.0
-        for sn in model_def.state_names():
-            prior_full[sn] = float(data.y0)
 
         cost_fn   = _make_cost(all_names, {}, model_def, A_floor, data)
         x0_prior  = np.array([prior_full[k] for k in all_names])

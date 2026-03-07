@@ -40,7 +40,8 @@ def _fetch_temperatures(state) -> dict:
     supply     = state.get_device(devices.get("supply_temp", ""))
     ret        = state.get_device(devices.get("return_temp", ""))
     weather    = state.get_weather()
-    radiator   = state.get_derived(f"{zone_id}_radiator_output")
+    radiator_name = zone_cfg.get("radiator", {}).get("name", f"{zone_id}_radiator_output")
+    radiator      = state.get_derived(radiator_name)
 
     return {
         "room_temperature_c":        room.get("temperature"),
@@ -109,54 +110,61 @@ def _fetch_mpc_status(state) -> dict:
 
 def _fetch_schedule(state) -> dict:
     """
-    Return a full schedule overview:
-    - Current setpoint and state
-    - Occupied/unoccupied temperatures
-    - Weekly schedule (summarised as occupied hours per day)
-    - Upcoming special days (next 30 days)
+    Return schedule overview for all configured zones.
+    Each zone is keyed by display name for readability by the AI.
     """
-    current    = schedules_module.get_current_setpoint()
-    temps      = schedules_module.get_setpoint_temperatures()
-    weekly     = schedules_module.get_weekly_schedule()
-    special    = schedules_module.get_special_days() or {}
-
-    # Summarise weekly schedule as occupied hours per day (more readable for Claude)
-    weekly_summary = {}
-    if weekly:
-        for day, states in weekly.items():
-            occupied = [h for h, s in enumerate(states) if s == "occupied"]
-            weekly_summary[day] = occupied
-
-    # Only show special days in the next 30 days
-    today = datetime.now().strftime("%Y-%m-%d")
+    import config
     from datetime import timedelta
-    cutoff = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
-    upcoming_special = {
-        date: (
-            "away (unoccupied all day)"
-            if all(s == "unoccupied" for s in states)
-            else "home (occupied all day)"
-            if all(s == "occupied" for s in states)
-            else f"custom ({sum(1 for s in states if s == 'occupied')} occupied hours)"
-        )
-        for date, states in sorted(special.items())
-        if today <= date <= cutoff
-    }
 
-    return {
-        "current_setpoint_c": current.get("setpoint") if current else None,
-        "current_state":      current.get("state") if current else None,
-        "current_day":        current.get("day") if current else None,
-        "current_hour":       current.get("hour") if current else None,
-        "temperatures": {
-            "occupied_T_min_c":   temps.get("occupied",   {}).get("T_min") if isinstance(temps.get("occupied"), dict) else temps.get("occupied"),
-            "occupied_T_max_c":   temps.get("occupied",   {}).get("T_max") if isinstance(temps.get("occupied"), dict) else None,
-            "unoccupied_T_min_c": temps.get("unoccupied", {}).get("T_min") if isinstance(temps.get("unoccupied"), dict) else temps.get("unoccupied"),
-            "unoccupied_T_max_c": temps.get("unoccupied", {}).get("T_max") if isinstance(temps.get("unoccupied"), dict) else None,
-        },
-        "weekly_occupied_hours": weekly_summary,
-        "upcoming_special_days": upcoming_special,
-    }
+    result = {}
+
+    for zone_id, zone_cfg in config.ZONES.items():
+        display_name = zone_cfg["display_name"]
+
+        current = schedules_module.get_current_setpoint(room=zone_id)
+        temps   = schedules_module.get_setpoint_temperatures()
+        weekly  = schedules_module.get_weekly_schedule(room=zone_id)
+        special = schedules_module.get_special_days(room=zone_id) or {}
+
+        # Summarise weekly schedule as occupied hours per day
+        weekly_summary = {}
+        if weekly:
+            for day, states in weekly.items():
+                occupied = [h for h, s in enumerate(states) if s == "occupied"]
+                weekly_summary[day] = occupied
+
+        # Only show special days in the next 30 days
+        today   = datetime.now().strftime("%Y-%m-%d")
+        cutoff  = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
+        upcoming_special = {
+            date: (
+                "away (unoccupied all day)"
+                if all(s == "unoccupied" for s in states)
+                else "home (occupied all day)"
+                if all(s == "occupied" for s in states)
+                else f"custom ({sum(1 for s in states if s == 'occupied')} occupied hours)"
+            )
+            for date, states in sorted(special.items())
+            if today <= date <= cutoff
+        }
+
+        result[display_name] = {
+            "zone_id":            zone_id,
+            "current_setpoint_c": current.get("setpoint") if current else None,
+            "current_state":      current.get("state")    if current else None,
+            "current_day":        current.get("day")      if current else None,
+            "current_hour":       current.get("hour")     if current else None,
+            "temperatures": {
+                "occupied_T_min_c":   temps.get("occupied",   {}).get("T_min") if isinstance(temps.get("occupied"),   dict) else temps.get("occupied"),
+                "occupied_T_max_c":   temps.get("occupied",   {}).get("T_max") if isinstance(temps.get("occupied"),   dict) else None,
+                "unoccupied_T_min_c": temps.get("unoccupied", {}).get("T_min") if isinstance(temps.get("unoccupied"), dict) else temps.get("unoccupied"),
+                "unoccupied_T_max_c": temps.get("unoccupied", {}).get("T_max") if isinstance(temps.get("unoccupied"), dict) else None,
+            },
+            "weekly_occupied_hours": weekly_summary,
+            "upcoming_special_days": upcoming_special,
+        }
+
+    return result
 
 
 # Registry: data_type string → fetcher function

@@ -157,6 +157,20 @@ def reload_schedules() -> dict:
 # SECTION 4: READ FUNCTIONS (for bot, MPC, logging)
 # =============================================================================
 
+def _resolve_room(room: str) -> str:
+    """
+    Resolve a room name, falling back to 'default' if not found.
+    This allows zone IDs (e.g. 'zone_1') to work automatically once a
+    matching room is created, while gracefully using 'default' until then.
+    """
+    schedules = _get_schedules()
+    if room in schedules.get("rooms", {}):
+        return room
+    if room != "default":
+        logger.info(f"Room '{room}' not in schedules — using 'default'")
+    return "default"
+
+
 def get_current_setpoint(room: str = "default") -> dict | None:
     """
     Get the current temperature setpoint.
@@ -181,7 +195,8 @@ def get_current_setpoint(room: str = "default") -> dict | None:
         Returns None if room not found.
     """
     schedules = _get_schedules()
-    
+    room = _resolve_room(room)
+
     # Check if room exists
     if room not in schedules.get("rooms", {}):
         logger.warning(f"⚠️ Room '{room}' not found in schedules")
@@ -259,6 +274,7 @@ def get_setpoint_horizon(steps: int, room: str = "default") -> dict | None:
         Returns None if room not found.
     """
     schedules = _get_schedules()
+    room = _resolve_room(room)
 
     if room not in schedules.get("rooms", {}):
         logger.warning(f"⚠️ Room '{room}' not found")
@@ -701,6 +717,22 @@ def clear_past_special_days(room: str = "default") -> int:
 # =============================================================================
 # SECTION 6: ROOM MANAGEMENT (for future multi-room support)
 # =============================================================================
+
+def ensure_room_exists(room: str, copy_from: str = "default") -> None:
+    """
+    Ensure a schedule room exists for the given zone ID.
+    If not, create it by copying from copy_from (default: "default").
+    Called automatically at startup for each configured zone.
+    """
+    import copy as _copy
+    schedules = _get_schedules()
+    if room in schedules.get("rooms", {}):
+        return
+    source = schedules["rooms"].get(copy_from) or schedules["rooms"].get("default", {})
+    schedules["rooms"][room] = _copy.deepcopy(source)
+    _save_schedules(schedules)
+    logger.info(f"Created schedule room '{room}' (copied from '{copy_from}')")
+
 
 def add_room(room: str, copy_from: str = "default") -> bool:
     """

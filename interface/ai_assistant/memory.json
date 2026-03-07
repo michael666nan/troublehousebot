@@ -1,0 +1,231 @@
+{
+  "8425877402": [
+    {
+      "role": "user",
+      "content": "Check the battery level on all devices",
+      "timestamp": "2026-03-07T04:09:04"
+    },
+    {
+      "role": "tool_call",
+      "tool_id": "toolu_01CdUH6fuoJzdcZ5hfihwbiL",
+      "name": "get_influx_schema",
+      "input": {},
+      "timestamp": "2026-03-07T04:09:08"
+    },
+    {
+      "role": "tool_result",
+      "tool_id": "toolu_01CdUH6fuoJzdcZ5hfihwbiL",
+      "name": "get_influx_schema",
+      "content": {
+        "bucket": "housebot",
+        "measurements": {
+          "electricity_price": {
+            "fields": [
+              "grid_tariff",
+              "price_eur",
+              "price_full",
+              "price_full_ex_vat",
+              "price_spot",
+              "system_tariff",
+              "tax",
+              "transmission_tariff"
+            ],
+            "first": null,
+            "last": null
+          },
+          "outside_weather": {
+            "fields": [
+              "code",
+              "hum",
+              "is_day",
+              "pressure",
+              "rain",
+              "soil_0cm",
+              "soil_18cm",
+              "soil_54cm",
+              "soil_6cm",
+              "solar_diffuse",
+              "solar_direct",
+              "solar_dni",
+              "solar_east",
+              "solar_ghi",
+              "solar_north",
+              "solar_south",
+              "solar_west",
+              "temp",
+              "wind",
+              "wind_dir",
+              "wind_gust",
+              "wind_speed"
+            ],
+            "first": null,
+            "last": null
+          },
+          "radiator_1_output": {
+            "fields": [
+              "watts"
+            ],
+            "first": null,
+            "last": null
+          },
+          "sensor_1": {
+            "fields": [
+              "battery",
+              "humidity",
+              "linkquality",
+              "power_outage_count",
+              "pressure",
+              "temperature",
+              "voltage"
+            ],
+            "first": null,
+            "last": null
+          },
+          "sensor_2": {
+            "fields": [
+              "battery",
+              "humidity",
+              "linkquality",
+              "power_outage_count",
+              "pressure",
+              "temperature",
+              "voltage"
+            ],
+            "first": null,
+            "last": null
+          },
+          "sensor_3": {
+            "fields": [
+              "battery",
+              "humidity",
+              "linkquality",
+              "power_outage_count",
+              "pressure",
+              "temperature",
+              "voltage"
+            ],
+            "first": null,
+            "last": null
+          },
+          "thermostat_1": {
+            "fields": [
+              "abs_max_heat_setpoint_limit",
+              "adaptation_run_settings",
+              "algorithm_scale_factor",
+              "battery",
+              "external_measured_room_sensor",
+              "heat_available",
+              "heat_required",
+              "linkquality",
+              "load_balancing_enable",
+              "load_estimate",
+              "load_room_mean",
+              "local_temperature",
+              "local_temperature_calibration",
+              "mounted_mode_active",
+              "mounted_mode_control",
+              "occupied_heating_setpoint",
+              "occupied_heating_setpoint_scheduled",
+              "pi_heating_demand",
+              "preheat_status",
+              "radiator_covered",
+              "trigger_time",
+              "window_open_external",
+              "window_open_feature"
+            ],
+            "first": null,
+            "last": null
+          },
+          "zone_1_radiator_output": {
+            "fields": [
+              "watts"
+            ],
+            "first": null,
+            "last": null
+          }
+        },
+        "count": 8
+      },
+      "timestamp": "2026-03-07T04:09:09"
+    },
+    {
+      "role": "tool_call",
+      "tool_id": "toolu_01WS2invgFg87Z4NbJnLAVxR",
+      "name": "plot_influx",
+      "input": {
+        "series": [
+          {
+            "measurement": "sensor_1",
+            "field": "battery",
+            "label": "Sensor 1",
+            "unit": "%"
+          },
+          {
+            "measurement": "sensor_2",
+            "field": "battery",
+            "label": "Sensor 2",
+            "unit": "%"
+          },
+          {
+            "measurement": "sensor_3",
+            "field": "battery",
+            "label": "Sensor 3",
+            "unit": "%"
+          },
+          {
+            "measurement": "thermostat_1",
+            "field": "battery",
+            "label": "Thermostat (TRV)",
+            "unit": "%"
+          }
+        ],
+        "time_range": "30d",
+        "title": "Device Battery Levels (last 30 days)"
+      },
+      "timestamp": "2026-03-07T04:09:14"
+    },
+    {
+      "role": "tool_result",
+      "tool_id": "toolu_01WS2invgFg87Z4NbJnLAVxR",
+      "name": "plot_influx",
+      "content": {
+        "description": "Device Battery Levels (last 30 days) \u2014 30d",
+        "message": "Chart generated \u2014 sending as file."
+      },
+      "timestamp": "2026-03-07T04:09:14"
+    },
+    {
+      "role": "tool_call",
+      "tool_id": "toolu_01N6CgKgtHJdr9MNVzLeDz9C",
+      "name": "get_home_data",
+      "input": {
+        "data_type": [
+          "temperatures"
+        ]
+      },
+      "timestamp": "2026-03-07T04:09:16"
+    },
+    {
+      "role": "tool_result",
+      "tool_id": "toolu_01N6CgKgtHJdr9MNVzLeDz9C",
+      "name": "get_home_data",
+      "content": {
+        "temperatures": {
+          "room_temperature_c": 20.16,
+          "supply_pipe_temperature_c": 34.63,
+          "return_pipe_temperature_c": 24.45,
+          "outdoor_temperature_c": 3.6,
+          "thermostat_setpoint_c": 20.5,
+          "thermostat_measured_c": 20.53,
+          "radiator_output_w": 230.3
+        }
+      },
+      "timestamp": "2026-03-07T04:09:16"
+    },
+    {
+      "role": "assistant",
+      "content": "Here's the 30-day battery chart for all your Zigbee devices \ud83d\udcca\n\nThe system has <b>4 battery-powered devices</b>:\n\n\u2022 <b>Sensor 1</b> \u2014 room temperature sensor\n\u2022 <b>Sensor 2</b> \u2014 room temperature sensor\n\u2022 <b>Sensor 3</b> \u2014 room temperature sensor\n\u2022 <b>Thermostat 1</b> \u2014 Danfoss Ally TRV\n\nThe chart shows their battery trends over the last 30 days. If any device is dropping quickly, it might be time to grab some replacement batteries! \ud83d\udd0b",
+      "timestamp": "2026-03-07T04:09:21"
+    }
+  ]
+}

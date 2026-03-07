@@ -74,7 +74,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     zone      = _default_zone()
     thermostat = state.get_device(zone.thermostat_name or "")
-    radiator   = state.get_derived(f"{zone.id}_radiator_output")
+    radiator   = state.get_derived(zone.radiator_name)
     weather_data = state.get_weather()
 
     msg = f"🌡️ <b>{zone.display_name} — Thermostat</b>\n"
@@ -152,30 +152,50 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id):
         return
 
-    msg = "🏠 <b>TroubleHouseBot Commands</b>\n\n"
-    msg += "<b>General</b>\n"
-    msg += "/status - Current temperatures and radiator output\n"
-    msg += "/set - Set thermostat target (e.g., /set 21.5)\n"
-    msg += "/help - Show this help message\n"
-    msg += "\n<b>Monitoring</b>\n"
-    msg += "/weather - Detailed weather data\n"
-    msg += "/price - Current electricity price\n"
-    msg += "/schedule - Occupancy forecast (e.g., /schedule 48)\n"
-    msg += "\n<b>MPC</b>\n"
-    msg += "/mpc - MPC status and forecast chart\n"
-    msg += "/mpc run - Force immediate MPC optimization\n"
-    msg += "\n<b>System Identification</b>\n"
-    msg += "/sysid - Fetch and plot ID data (e.g., /sysid 72 30)\n"
-    msg += "/sysid test - Run model validation tests\n"
     from sysid.models import REGISTRY
-    _models = "|".join(REGISTRY.keys())
-    msg += f"/sysid run [{_models}] [hours] [dt] - Run PEM estimation\n"
-    msg += "/sysid models - List available model structures\n"
-    msg += "/sysid accept - Apply last result to model_params.json\n"
-    msg += "/sysid reject - Discard last result\n"
+    _models   = "|".join(REGISTRY.keys())
+    zone_ids  = config.get_zone_ids()
+    zone_args = "|".join(zone_ids)
+    zones_str = " | ".join(
+        f"{config.get_zone_display_name(z)} = <code>{z}</code>"
+        for z in zone_ids
+    )
+
+    msg = "🏠 <b>TroubleHouseBot Commands</b>\n"
+    msg += f"\n<b>Zones:</b> {zones_str}\n"
+
+    msg += "\n<b>General</b>\n"
+    msg += "/help — This message\n"
+    msg += "/status — Current temperatures, radiator output, sensor readings\n"
+    msg += "/set <code>&lt;temp&gt;</code> — Set thermostat setpoint\n"
+    msg += "  e.g. <code>/set 21.5</code>\n"
+
+    msg += "\n<b>Monitoring</b>\n"
+    msg += "/weather — Detailed current weather\n"
+    msg += "/price — Current electricity price breakdown\n"
+    msg += f"/schedule [<code>hours</code>] — Occupancy schedule forecast\n"
+    msg += "  e.g. <code>/schedule 48</code>\n"
+    msg += f"/plot <code>&lt;type&gt;</code> [<code>zone</code>] [<code>hours</code>] — Historical data chart\n"
+    msg += "  types: <code>temperatures</code> | <code>radiator</code> | <code>prices</code>\n"
+    msg += f"  e.g. <code>/plot temperatures {zone_ids[0]} 24</code>\n"
+
+    msg += "\n<b>MPC</b>\n"
+    msg += "/mpc — MPC state estimate and forecast chart\n"
+    msg += "/mpc run — Force immediate MPC optimisation\n"
+
+    msg += "\n<b>System Identification</b>\n"
+    msg += f"/sysid [<code>zone</code>] [<code>hours</code>] [<code>dt</code>] — Fetch and plot ID data\n"
+    msg += f"  e.g. <code>/sysid {zone_ids[0]} 72 15</code>\n"
+    msg += f"/sysid test [<code>zone</code>] [<code>hours</code>] — Model validation tests\n"
+    msg += f"/sysid run [<code>{_models}</code>] [<code>zone</code>] [<code>hours</code>] [<code>dt</code>] [--fix <code>params</code>] [--obj <code>filter|nstep|openloop</code>] [--n <code>horizon</code>]\n"
+    msg += f"  e.g. <code>/sysid run 2R2C {zone_ids[0]} 96 15 --obj nstep --n 12</code>\n"
+    msg += "/sysid models — List available model structures\n"
+    msg += f"/sysid accept [<code>zone</code>] — Apply last result to model_params_zone.json\n"
+    msg += "/sysid reject — Discard last result\n"
+
     msg += "\n<b>AI Assistant</b>\n"
-    msg += "/chat - Start AI assistant chat\n"
-    msg += "/exit - Exit AI assistant chat\n"
+    msg += "/chat — Start conversational AI assistant\n"
+    msg += "/exit — End AI assistant session\n"
 
     await update.message.reply_text(msg, parse_mode="HTML")
 
@@ -471,19 +491,33 @@ async def cmd_sysid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args or []
     sub  = args[0].lower() if args else "plot"
 
+    # Resolve optional zone_id — last arg if it matches a known zone
+    zone_ids     = config.get_zone_ids()
+    zone_id      = config.get_first_zone_id()
+    filtered_args = []
+    for a in args[1:]:
+        if a in zone_ids:
+            zone_id = a
+        else:
+            filtered_args.append(a)
+    # Rebuild args without zone_id for downstream parsing
+    args = [args[0]] + filtered_args if args else []
+
     # --- Accept / Reject ---
     if sub == "accept":
         res = _pending_sysid.get("result")
         if not res:
-            await update.message.reply_text("⚠️ No pending result. Run /sysid run first.")
+            await update.message.reply_text("No pending result. Run /sysid run first.")
             return
         from sysid.runner import apply_result
-        ok = apply_result(res)
+        pending_zone = _pending_sysid.get("zone_id", zone_id)
+        ok = apply_result(res, zone_id=pending_zone)
         _pending_sysid.clear()
+        zone_name = config.get_zone_display_name(pending_zone)
         if ok:
             await update.message.reply_text(
-                "✅ model_params.json updated.\n"
-                "New parameters will be used on the next MPC step."
+                f"✅ model_params_{pending_zone}.json updated for {zone_name}.\n"
+                f"New parameters will be used on the next MPC step."
             )
         else:
             await update.message.reply_text("❌ Failed to apply parameters.")
@@ -518,16 +552,34 @@ async def cmd_sysid(update: Update, context: ContextTypes.DEFAULT_TYPE):
             arg_offset += 1
 
     hours      = 72.0
-    dt_minutes = None
+    dt_minutes   = None
     fixed_params = []   # parameters to fix (not estimated)
+    objective    = "filter"
+    N_horizon    = 12
 
-    # Parse --fix param1,param2 anywhere in remaining args
+    # Parse --fix and --obj anywhere in remaining args
     remaining = args[arg_offset:]
     positional = []
     i = 0
     while i < len(remaining):
         if remaining[i] == "--fix" and i + 1 < len(remaining):
             fixed_params = [p.strip() for p in remaining[i+1].split(",")]
+            i += 2
+        elif remaining[i] == "--obj" and i + 1 < len(remaining):
+            obj_arg = remaining[i+1].strip().lower()
+            if obj_arg not in ("filter", "nstep", "openloop"):
+                await update.message.reply_text(
+                    "❌ --obj must be one of: <code>filter</code> | <code>nstep</code> | <code>openloop</code>",
+                    parse_mode="HTML"
+                )
+                return
+            objective = obj_arg
+            i += 2
+        elif remaining[i] == "--n" and i + 1 < len(remaining):
+            try:
+                N_horizon = int(remaining[i+1])
+            except ValueError:
+                pass
             i += 2
         else:
             positional.append(remaining[i])
@@ -554,7 +606,7 @@ async def cmd_sysid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         loop = asyncio.get_event_loop()
         data = await loop.run_in_executor(
-            None, lambda: fetch_id_data(hours_back=hours, dt_minutes=dt_minutes)
+            None, lambda: fetch_id_data(zone_id=zone_id, hours_back=hours, dt_minutes=dt_minutes)
         )
 
         if data is None:
@@ -572,25 +624,32 @@ async def cmd_sysid(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # --- Model validation tests ---
             await update.message.reply_text("🧪 Running model tests...")
             from sysid.test import run_tests
-            report = await loop.run_in_executor(None, lambda: run_tests(data))
+            report = await loop.run_in_executor(None, lambda: run_tests(data, zone_id=zone_id))
             await update.message.reply_text(report, parse_mode="HTML")
 
         elif sub == "run":
             # --- Full PEM estimation ---
             await update.message.reply_text("⚙️ Running PEM estimation (this may take a while)...")
             from sysid.runner import run_identification
-            _model = model_name
-            _fixed = fixed_params
+            _model     = model_name
+            _fixed     = fixed_params
+            _zone      = zone_id
+            _objective = objective
+            _N_horizon = N_horizon
             run_result = await loop.run_in_executor(
                 None,
                 lambda: run_identification(
+                    zone_id=_zone,
                     hours_back=hours,
                     dt_minutes=dt_minutes,
                     model_name=_model,
                     fixed_params=_fixed,
+                    objective=_objective,
+                    N_horizon=_N_horizon,
                 ),
             )
-            _pending_sysid["result"] = run_result
+            _pending_sysid["result"]  = run_result
+            _pending_sysid["zone_id"] = zone_id
 
             # Text summary
             await update.message.reply_text(
@@ -612,6 +671,20 @@ async def cmd_sysid(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     os.unlink(filepath)
                 else:
                     await update.message.reply_text(f"⚠️ Plot failed: {err}")
+
+                # Residual diagnostics plot
+                from sysid.residual_plot import plot_residuals
+                filepath, err = plot_residuals(data, run_result.estimation)
+                if filepath:
+                    with open(filepath, "rb") as f:
+                        await update.message.reply_document(
+                            document=f,
+                            filename=os.path.basename(filepath),
+                            caption="🔍 Residual diagnostics — ACF, XCF, RMSE vs horizon",
+                        )
+                    os.unlink(filepath)
+                else:
+                    await update.message.reply_text(f"⚠️ Residual plot failed: {err}")
 
         else:
             # --- Default: data inspection plot ---

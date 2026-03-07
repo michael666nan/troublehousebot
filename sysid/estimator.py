@@ -9,6 +9,11 @@
 #   J = sum_{k=0}^{N-1} e[k]²
 #   where e[k] = y[k] - C @ x̂[k+1|k]  (prior prediction error)
 #
+# x0 is NOT a free parameter. It is estimated analytically by least squares
+# given the current model matrices, then used in the filter. This removes
+# n_states free parameters from the nonlinear optimisation and gives the
+# optimal x0 for each candidate theta/K during iteration.
+#
 # Public interface:
 #   run_pem(data, model_def, prior, free_names, use_global) -> EstimationResult
 # =============================================================================
@@ -42,6 +47,9 @@ class EstimationResult:
 
     rmse_filter:  float = 0.0
     rmse_open:    float = 0.0
+    rmse_nstep:   float = 0.0
+    N_horizon:    int   = 12
+    objective:    str   = "filter"
 
     confidence:   dict  = field(default_factory=dict)
     identifiable: dict  = field(default_factory=dict)
@@ -58,6 +66,7 @@ class EstimationResult:
         lines.append(f"Success:     {self.success}")
         lines.append(f"RMSE filter: {self.rmse_filter:.4f}°C  (one-step)")
         lines.append(f"RMSE open:   {self.rmse_open:.4f}°C  (open-loop)")
+        lines.append(f"RMSE {self.N_horizon}-step: {self.rmse_nstep:.4f}°C")
         lines.append(f"FIM cond:    {self.fim_cond:.2e}")
         lines.append("")
         lines.append("Physical parameters:")
@@ -67,11 +76,14 @@ class EstimationResult:
             ident = self.identifiable.get(name, False)
             lines.append(f"  {name:4s} = {val:8.4f}  ±{std:.4f} (95%)  {'✅' if ident else '⚠️'}")
         k = self.K_est.flatten()
+        lines.append("\nKalman gains:")
+        for i, kv in enumerate(k):
+            std   = self.confidence.get(f"K{i}", float("nan"))
+            ident = self.identifiable.get(f"K{i}", False)
+            lines.append(f"  K{i}   = {kv:8.4f}  ±{std:.4f} (95%)  {'✅' if ident else '⚠️'}")
         x = self.x0_est
-        k_str = ", ".join(f"{v:.4f}" for v in k)
         x_str = ", ".join(f"{v:.2f}°C" for v in x)
-        lines.append(f"\nK     = [{k_str}]")
-        lines.append(f"x0    = [{x_str}]")
+        lines.append(f"\nInitial state (LS):  [{x_str}]")
         return "\n".join(lines)
 
 
@@ -79,35 +91,124 @@ class EstimationResult:
 # COST FUNCTION
 # =============================================================================
 
+def _estimate_x0(model, data, N_steps: int | None = None) -> np.ndarray:
+    """
+    Estimate initial state x0 by least squares given fixed model matrices.
+
+    Uses the open-loop (K=0) response over the first N_steps steps:
+
+        y[k] = C @ A^k @ x0 + C @ sum_{j=0}^{k-1} A^(k-1-j) @ B @ u[j]
+
+    Rearranging:
+        Φ[k] @ x0 = y[k] - f[k]
+
+    where  Φ[k] = C @ A^k        (observability row)
+           f[k] = forced response at step k (scalar)
+
+    Stacked for k=1..N_steps and solved by least squares.
+
+    Args:
+        model:   ModelMatrices (uses A, B, C; ignores K)
+        data:    IdData
+        N_steps: Number of steps to use (default: min(data.N, 48))
+
+    Returns:
+        x0 estimate as ndarray of shape (n_states,)
+    """
+    if N_steps is None:
+        N_steps = min(data.N, 48)
+
+    A, B, C = model.A, model.B, model.C
+    n = A.shape[0]
+
+    # Build Φ (N_steps × n) and z (N_steps,)
+    Phi = np.zeros((N_steps, n))
+    z   = np.zeros(N_steps)
+
+    x_forced = np.zeros(n)   # forced response state (starts at 0)
+    Ak = np.eye(n)            # A^k
+
+    for k in range(1, N_steps + 1):
+        # u[k-1] = [T_amb, P_sol, P_heat] at step k-1
+        u_k = np.array([data.T_amb[k-1], data.P_sol[k-1], data.P_heat[k-1]])
+
+        # Update forced state: x_forced[k] = A @ x_forced[k-1] + B @ u[k-1]
+        x_forced = A @ x_forced + B @ u_k
+
+        # Observability row: C @ A^k
+        Ak = A @ Ak
+        Phi[k-1, :] = (C @ Ak).flatten()
+
+        # Residual: y[k] - forced response output
+        y_k = data.y[k-1] if k <= data.N else data.y[-1]
+        z[k-1] = float(y_k) - float(C @ x_forced)
+
+    # Least squares: Phi @ x0 = z
+    x0, _, _, _ = np.linalg.lstsq(Phi, z, rcond=None)
+    return x0
+
+
 def _make_cost(
     free_names: list[str],
     fixed: dict,
     model_def: ModelDef,
     A_floor: float,
     data,
+    objective: str = "filter",
+    N_horizon: int = 12,
 ):
-    """Returns cost function f(x) -> scalar (MSE of innovations)."""
+    """
+    Returns cost function f(x) -> scalar.
+
+    objective:
+        "filter"   — MSE of one-step-ahead filter innovations (default)
+        "nstep"    — MSE of all predictions at horizons 1..N_horizon
+                     (corrects at each k, predicts N steps open-loop)
+        "openloop" — MSE of full open-loop simulation (K=0)
+
+    x0 is always estimated analytically by least squares.
+    """
     dt_sec     = data.dt_seconds
     phys_names = model_def.param_names
     k_names    = model_def.kalman_names()
-    s_names    = model_def.state_names()
-    n          = model_def.n_states
 
     def cost(x):
         params = dict(zip(free_names, x))
         params.update(fixed)
-
         theta = {k: params[k] for k in phys_names}
         K     = np.array([[params.get(kn, 0.0)] for kn in k_names])
-        x0    = np.array([params.get(sn, data.y0) for sn in s_names])
 
         try:
             model = model_def.build(theta, A_floor, dt_sec, K)
-            innovations, _ = filter_simulate(model, data, x0)
-            valid = innovations[np.isfinite(innovations)]
-            if len(valid) == 0:
-                return 1e10
-            val = float(np.mean(valid ** 2))
+            x0    = _estimate_x0(model, data)
+
+            if objective == "filter":
+                innovations, _ = filter_simulate(model, data, x0)
+                valid = innovations[np.isfinite(innovations)]
+                if len(valid) == 0:
+                    return 1e10
+                val = float(np.mean(valid ** 2))
+
+            elif objective == "nstep":
+                from sysid.simulate import nstep_trajectory_simulate
+                _, X_filter = filter_simulate(model, data, x0)
+                errors = nstep_trajectory_simulate(model, data, X_filter, N_horizon)
+                valid = errors[np.isfinite(errors)]
+                if len(valid) == 0:
+                    return 1e10
+                val = float(np.mean(valid ** 2))
+
+            elif objective == "openloop":
+                y_pred, _ = open_simulate(model, data, x0)
+                residuals = data.y - y_pred
+                valid = residuals[np.isfinite(residuals)]
+                if len(valid) == 0:
+                    return 1e10
+                val = float(np.mean(valid ** 2))
+
+            else:
+                raise ValueError(f"Unknown objective: {objective!r}")
+
             return val if np.isfinite(val) else 1e10
         except Exception:
             return 1e10
@@ -138,15 +239,14 @@ def _compute_confidence(
     dt_sec     = data.dt_seconds
     phys_names = model_def.param_names
     k_names    = model_def.kalman_names()
-    s_names    = model_def.state_names()
 
     def _innovations(x):
         params = dict(zip(free_names, x))
         params.update(fixed)
         theta = {k: params[k] for k in phys_names}
         K     = np.array([[params.get(kn, 0.0)] for kn in k_names])
-        x0    = np.array([params.get(sn, data.y0) for sn in s_names])
         model = model_def.build(theta, A_floor, dt_sec, K)
+        x0    = _estimate_x0(model, data)
         innov, _ = filter_simulate(model, data, x0)
         return innov
 
@@ -196,10 +296,13 @@ def _compute_confidence(
 
 def run_pem(
     data,
-    model_def: ModelDef,
+    model_def:  ModelDef,
+    zone_id:    str | None = None,
     prior: dict | None = None,
     free_names: list[str] | None = None,
     use_global: bool = False,
+    objective:  str = "filter",
+    N_horizon:  int = 12,
 ) -> EstimationResult:
     """
     Run PEM estimation for the given model structure.
@@ -207,16 +310,22 @@ def run_pem(
     Args:
         data:       IdData from sysid.data.fetch_id_data()
         model_def:  ModelDef from sysid.models (1R1C, 2R2C, 3R3C, ...)
+        zone_id:    Zone to load prior from (default: first zone)
         prior:      Initial parameter values. Defaults to model_store.
         free_names: Which parameters to estimate. Defaults to all.
         use_global: Use differential_evolution (slower, more robust).
+        objective:  Cost function: "filter" | "nstep" | "openloop"
+        N_horizon:  Prediction horizon for "nstep" objective (default: 12)
 
     Returns:
         EstimationResult
     """
+    if zone_id is None:
+        zone_id = cfg.get_first_zone_id()
+
     result          = EstimationResult()
     result.model_name = model_def.name
-    A_floor         = cfg.MPC_MODEL["A"]
+    A_floor         = cfg.ZONES[zone_id]["mpc_model"]["A"]
 
     all_names  = model_def.all_param_names()
     all_bounds = model_def.all_bounds()
@@ -224,7 +333,7 @@ def run_pem(
     # --- Prior ---
     if prior is None:
         from control import model_store
-        stored = model_store.load(config.get_first_zone_id())
+        stored = model_store.load(zone_id)
         prior  = {}
         # Physical params: from store if available, else from model bounds midpoint
         for name in model_def.param_names:
@@ -237,13 +346,15 @@ def run_pem(
         for i, kn in enumerate(model_def.kalman_names()):
             stored_k = stored.get("K", np.zeros((2, 1))).flatten()
             prior[kn] = float(stored_k[i]) if i < len(stored_k) else 0.0
-    # Initial state defaults to y0
-    for sn in model_def.state_names():
-        prior.setdefault(sn, float(data.y0))
+    # Note: x0 is NOT in the prior — it is estimated analytically per iteration
 
     # --- Free parameters ---
     if free_names is None:
         free_names = all_names
+
+    # Remove any state names that may have been passed in free_names (legacy)
+    state_names = model_def.state_names()
+    free_names  = [n for n in free_names if n not in state_names]
 
     fixed = {k: prior[k] for k in all_names if k not in free_names}
 
@@ -255,7 +366,9 @@ def run_pem(
     bounds = [all_bounds[k] for k in free_names]
 
     # --- Optimize ---
-    cost_fn = _make_cost(free_names, fixed, model_def, A_floor, data)
+    cost_fn = _make_cost(free_names, fixed, model_def, A_floor, data,
+                         objective=objective, N_horizon=N_horizon)
+    logger.info(f"Objective: {objective}" + (f" (N={N_horizon})" if objective == "nstep" else ""))
 
     logger.info("Starting optimization...")
     try:
@@ -287,21 +400,32 @@ def run_pem(
     params = dict(zip(free_names, x_opt))
     params.update(fixed)
 
-    result.theta  = {k: params[k] for k in model_def.param_names}
-    k_vals        = [params[kn] for kn in model_def.kalman_names()]
-    result.K_est  = np.array(k_vals).reshape(model_def.n_states, 1)
-    result.x0_est = np.array([params[sn] for sn in model_def.state_names()])
+    result.theta = {k: params[k] for k in model_def.param_names}
+    k_vals       = [params[kn] for kn in model_def.kalman_names()]
+    result.K_est = np.array(k_vals).reshape(model_def.n_states, 1)
+
+    # --- x0: analytical least-squares estimate on converged model ---
+    model         = model_def.build(result.theta, A_floor, data.dt_seconds, result.K_est)
+    result.x0_est = _estimate_x0(model, data)
 
     # --- RMSE ---
-    model = model_def.build(result.theta, A_floor, data.dt_seconds, result.K_est)
-    innov, _  = filter_simulate(model, data, result.x0_est)
+    innov, X_filter = filter_simulate(model, data, result.x0_est)
     result.rmse_filter = float(np.sqrt(np.mean(innov[np.isfinite(innov)] ** 2)))
 
     y_open, _ = open_simulate(model, data, result.x0_est)
     result.rmse_open = float(np.sqrt(np.mean((data.y - y_open) ** 2)))
 
+    # --- N-step ahead RMSE ---
+    from sysid.simulate import nstep_simulate
+    N_horizon          = min(N_horizon, data.N // 4)
+    y_nstep            = nstep_simulate(model, data, X_filter, N_horizon)
+    result.rmse_nstep  = float(np.sqrt(np.mean((data.y[N_horizon:] - y_nstep) ** 2)))
+    result.N_horizon   = N_horizon
+    result.objective   = objective
+
     logger.info(f"RMSE filter: {result.rmse_filter:.4f}°C")
     logger.info(f"RMSE open:   {result.rmse_open:.4f}°C")
+    logger.info(f"RMSE {N_horizon}-step: {result.rmse_nstep:.4f}°C")
 
     # --- Confidence ---
     result.confidence, result.identifiable, result.fim_cond = _compute_confidence(

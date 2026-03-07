@@ -105,6 +105,7 @@ ZONES = {
 
         # ---- Radiator physics ------------------------------------------------
         "radiator": {
+            "name":      "radiator_1_output",   # used as InfluxDB measurement name
             "rad_type":  22,
             "height_mm": 600,
             "length_m":  1.2,

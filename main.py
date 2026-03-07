@@ -52,8 +52,10 @@ class Zone:
         self.devices      = zone_cfg["devices"]
 
         # Radiator — only if radiator config is present
-        rad_cfg       = zone_cfg.get("radiator")
-        self.radiator = Radiator(**rad_cfg) if rad_cfg else None
+        rad_cfg           = zone_cfg.get("radiator", {})
+        self.radiator_name = rad_cfg.get("name", f"{zone_id}_radiator_output")
+        rad_kwargs        = {k: v for k, v in rad_cfg.items() if k != "name"}
+        self.radiator     = Radiator(**rad_kwargs) if rad_kwargs else None
 
         # MPC scheduler
         mpc_cfg         = zone_cfg.get("mpc", {})
@@ -86,6 +88,8 @@ class Zone:
     # -------------------------------------------------------------------------
 
     def start(self) -> None:
+        from control import schedules as schedules_module
+        schedules_module.ensure_room_exists(self.id)
         self._apply_thermostat_settings()
         state.on_device_update(self.on_sensor_update)
         self.mpc_scheduler.start()
@@ -134,7 +138,7 @@ class Zone:
         if None in [t_room, t_supply, t_return]:
             return
         watts = self.radiator.output(t_supply=t_supply, t_return=t_return, t_room=t_room)
-        state.update_derived(f"{self.id}_radiator_output", {"watts": watts})
+        state.update_derived(self.radiator_name, {"watts": watts})
 
     def _apply_thermostat_settings(self) -> None:
         """Send default settings to thermostat on startup."""

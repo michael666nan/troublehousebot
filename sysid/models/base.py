@@ -90,24 +90,24 @@ class ModelDef:
 
     def kalman_bounds(self) -> dict:
         """Bounds for Kalman gain parameters."""
-        return {f"K{i}": (-5.0, 5.0) for i in range(self.n_states)}
+        return {f"K{i}": (0.0, 1.0) for i in range(self.n_states)}
 
     def state_names(self) -> list[str]:
-        """Names of initial state parameters: Ti_0, Tm_0, (Te_0)."""
+        """Names of initial state variables: Ti_0, Tm_0, (Te_0)."""
         base = ["Ti_0", "Tm_0", "Te_0"]
         return base[:self.n_states]
 
     def state_bounds(self) -> dict:
-        """Bounds for initial state parameters."""
+        """Bounds for initial state parameters (used if x0 is fixed manually)."""
         return {name: (10.0, 35.0) for name in self.state_names()}
 
     def all_param_names(self) -> list[str]:
-        """All free parameter names: physical + Kalman + initial state."""
-        return self.param_names + self.kalman_names() + self.state_names()
+        """Free parameter names for optimisation: physical + Kalman only.
+        x0 is estimated analytically by least squares — not a free parameter."""
+        return self.param_names + self.kalman_names()
 
     def all_bounds(self) -> dict:
-        """All parameter bounds."""
+        """All parameter bounds: physical + Kalman only."""
         bounds = dict(self.param_bounds)
         bounds.update(self.kalman_bounds())
-        bounds.update(self.state_bounds())
         return bounds

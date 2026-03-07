@@ -54,12 +54,19 @@ def plot_results(data, result) -> tuple[str, str] | tuple[None, str]:
         return None, f"Import error: {e}"
 
     # Recompute predictions
-    A_floor = cfg.MPC_MODEL["A"]
+    A_floor = cfg.ZONES[cfg.get_first_zone_id()]["mpc_model"]["A"]
     model_def = get_model_def(result.model_name)
     model   = model_def.build(result.theta, A_floor, data.dt_seconds, result.K_est)
 
     innov,  X_filter = filter_simulate(model, data, result.x0_est)
     y_open, X_open   = open_simulate(model, data, result.x0_est)
+
+    # N-step ahead predictions
+    from sysid.simulate import nstep_simulate
+    N_horizon = getattr(result, "N_horizon", 12)
+    y_nstep   = nstep_simulate(model, data, X_filter, N_horizon)
+    # Align time axis: prediction at k+N uses time index k+N
+    times_nstep = data.times[N_horizon:-1] if N_horizon > 0 else data.times[1:]
 
     # Filter predicted y = y_meas - innovation  (prior prediction)
     y_filter = data.y - innov
@@ -109,6 +116,14 @@ def plot_results(data, result) -> tuple[str, str] | tuple[None, str]:
     ), row=1, col=1)
 
     fig.add_trace(go.Scatter(
+        x=times_nstep, y=y_nstep,
+        name=f"{N_horizon}-step ahead",
+        line=dict(color=_COLORS["sky"], width=1.5, dash="dashdot"),
+        hovertemplate=f"{N_horizon}-step: %{{y:.2f}} °C<extra></extra>",
+        connectgaps=False,
+    ), row=1, col=1)
+
+    fig.add_trace(go.Scatter(
         x=times_y, y=y_open_full,
         name="Open-loop (K=0)",
         line=dict(color=_COLORS["mauve"], width=1.5, dash="dash"),
@@ -117,9 +132,11 @@ def plot_results(data, result) -> tuple[str, str] | tuple[None, str]:
     ), row=1, col=1)
 
     # Annotation: RMSE values
+    rmse_nstep = getattr(result, "rmse_nstep", float("nan"))
     fig.add_annotation(
         xref="paper", yref="paper", x=0.01, y=0.97,
         text=(f"RMSE filter: {result.rmse_filter:.3f}°C  |  "
+              f"RMSE {N_horizon}-step: {rmse_nstep:.3f}°C  |  "
               f"RMSE open: {result.rmse_open:.3f}°C"),
         showarrow=False,
         font=dict(size=11, color=_COLORS["text"]),
