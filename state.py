@@ -79,11 +79,13 @@ class StateStore:
     derived: dict[str, dict] = field(default_factory=dict)
     weather: dict[str, Any] = field(default_factory=dict)
     price:   dict[str, Any] = field(default_factory=dict)
+    co2:     dict[str, Any] = field(default_factory=dict)
 
     _on_device_update:  list[Callable] = field(default_factory=list)
     _on_derived_update: list[Callable] = field(default_factory=list)
     _on_weather_update: list[Callable] = field(default_factory=list)
     _on_price_update:   list[Callable] = field(default_factory=list)
+    _on_co2_update:     list[Callable] = field(default_factory=list)
 
     def __post_init__(self):
         # Pre-populate devices so get_device() never crashes on unknown names
@@ -101,10 +103,30 @@ class StateStore:
         data = _load_from_disk()
         if not data:
             return
-        self.devices = data.get("devices", self.devices)
-        self.derived = data.get("derived", self.derived)
+
+        # Only restore devices that still exist in config — drop stale entries
+        known_devices = set(config.get_all_device_names())
+        loaded_devices = data.get("devices", {})
+        stale = [k for k in loaded_devices if k not in known_devices]
+        if stale:
+            logger.info(f"Dropping stale devices from state: {stale}")
+        self.devices = {k: v for k, v in loaded_devices.items() if k in known_devices}
+
+        # Only restore derived keys that match current zone radiator names
+        known_derived = {
+            cfg.get("radiator", {}).get("name", f"{zone_id}_radiator_output")
+            for zone_id, cfg in config.ZONES.items()
+            if cfg.get("radiator")
+        }
+        loaded_derived = data.get("derived", {})
+        stale_derived = [k for k in loaded_derived if k not in known_derived]
+        if stale_derived:
+            logger.info(f"Dropping stale derived entries from state: {stale_derived}")
+        self.derived = {k: v for k, v in loaded_derived.items() if k in known_derived}
+
         self.weather = data.get("weather", self.weather)
         self.price   = data.get("price",   self.price)
+        self.co2     = data.get("co2",     self.co2)
 
     def _save(self) -> None:
         _save_to_disk({
@@ -112,6 +134,7 @@ class StateStore:
             "derived": self.derived,
             "weather": self.weather,
             "price":   self.price,
+            "co2":     self.co2,
         })
 
     # =========================================================================
@@ -142,6 +165,12 @@ class StateStore:
             cb("electricity_price", data)
         self._save()
 
+    def update_co2(self, data: dict):
+        self.co2 = data
+        for cb in self._on_co2_update:
+            cb("co2_emissions", data)
+        self._save()
+
     # =========================================================================
     # Read methods (called by bot.py, ai_assistant, etc.)
     # =========================================================================
@@ -158,6 +187,9 @@ class StateStore:
     def get_price(self) -> dict:
         return self.price
 
+    def get_co2(self) -> dict:
+        return self.co2
+
     # =========================================================================
     # Callback registration
     # =========================================================================
@@ -173,6 +205,9 @@ class StateStore:
 
     def on_price_update(self, callback: Callable):
         self._on_price_update.append(callback)
+
+    def on_co2_update(self, callback: Callable):
+        self._on_co2_update.append(callback)
 
 
 # =============================================================================

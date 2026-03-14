@@ -16,18 +16,185 @@
 
 import logging
 import os
-import tempfile
+from datetime import datetime, timedelta
 
 import config
-from plots.history import (
-    _get_query_client,
-    _fetch_series,
-    _to_local,
-    _aggregation_window,
-    parse_time_range,
-    _base_layout,
-    _COLORS,
-)
+
+# =============================================================================
+# SHARED UTILITIES (previously in history.py)
+# =============================================================================
+
+def _get_query_client():
+    """Create an InfluxDB query client from config."""
+    from influxdb_client import InfluxDBClient
+    return InfluxDBClient(
+        url=config.INFLUXDB_URL,
+        token=config.INFLUXDB_TOKEN,
+        org=config.INFLUXDB_ORG,
+    )
+
+
+def _query(flux: str) -> list[tuple]:
+    """
+    Run a Flux query and return list of (time, value) tuples.
+    Returns empty list on error.
+    """
+    try:
+        client = _get_query_client()
+        query_api = client.query_api()
+        tables = query_api.query(flux)
+        result = []
+        for table in tables:
+            for record in table.records:
+                result.append((record.get_time(), record.get_value()))
+        client.close()
+        return result
+    except Exception as e:
+        logger.error(f"InfluxDB query failed: {e}")
+        return []
+
+
+def _fetch_series(
+    measurement: str,
+    field: str,
+    start: str,
+    stop: str = "now()",
+    window: str = "5m",
+    zone: str | None = None,
+) -> tuple[list, list]:
+    """
+    Fetch a time series from InfluxDB, aggregated to reduce point count.
+
+    Args:
+        measurement: InfluxDB measurement name
+        field:       Field key to fetch
+        start:       Flux start string (e.g. "-24h" or ISO datetime)
+        stop:        Flux stop string (default "now()")
+        window:      Aggregation window (default "5m")
+
+    Returns:
+        (times, values) — two aligned lists, empty on failure.
+    """
+    bucket = config.INFLUXDB_BUCKET
+    zone_filter = f'  |> filter(fn: (r) => r.zone == "{zone}")\n' if zone else ""
+    flux = f"""
+from(bucket: "{bucket}")
+  |> range(start: {start}, stop: {stop})
+  |> filter(fn: (r) => r._measurement == "{measurement}")
+  |> filter(fn: (r) => r._field == "{field}")
+{zone_filter}  |> aggregateWindow(every: {window}, fn: mean, createEmpty: false)
+  |> yield(name: "mean")
+"""
+    data = _query(flux)
+    if not data:
+        return [], []
+    return [t for t, v in data], [v for t, v in data]
+
+
+def _to_local(times: list) -> list:
+    """Convert UTC-aware timestamps to Copenhagen local time (naive, for consistent plotting)."""
+    import zoneinfo
+    tz = zoneinfo.ZoneInfo("Europe/Copenhagen")
+    return [t.astimezone(tz).replace(tzinfo=None) for t in times]
+
+
+# =============================================================================
+# SECTION 2: TIME RANGE PARSER
+# =============================================================================
+
+def parse_time_range(text: str) -> tuple[str, str]:
+    """
+    Parse a natural language time range into Flux start/stop strings.
+
+    Supports:
+        "24h", "48h", "12h"          relative hours
+        "7d", "3d", "30d"            relative days
+        "today"                      midnight to now
+        "yesterday"                  full previous day
+        "this week", "last 7 days"   last 7 days to now
+        "last week"                  Mon-Sun of previous week
+        "YYYY-MM-DD"                 specific day (00:00 to 23:59)
+        "YYYY-MM-DD to YYYY-MM-DD"   explicit date range
+
+    Returns:
+        (start, stop) as Flux-compatible strings.
+        Defaults to ("-24h", "now()") if unparseable.
+    """
+    text = text.strip().lower()
+    now  = datetime.now()
+
+    # Relative hours: "24h"
+    if text.endswith("h") and text[:-1].isdigit():
+        return f"-{text}", "now()"
+
+    # Relative days: "7d"
+    if text.endswith("d") and text[:-1].isdigit():
+        return f"-{text}", "now()"
+
+    if text == "today":
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return start.strftime("%Y-%m-%dT%H:%M:%SZ"), "now()"
+
+    if text == "yesterday":
+        y     = now - timedelta(days=1)
+        start = y.replace(hour=0,  minute=0,  second=0,  microsecond=0)
+        stop  = y.replace(hour=23, minute=59, second=59, microsecond=0)
+        return start.strftime("%Y-%m-%dT%H:%M:%SZ"), stop.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    if text in ("this week", "last 7 days"):
+        return "-7d", "now()"
+
+    if text == "last week":
+        days_since_monday = now.weekday()
+        last_monday = now - timedelta(days=days_since_monday + 7)
+        last_sunday = last_monday + timedelta(days=6)
+        start = last_monday.replace(hour=0,  minute=0,  second=0)
+        stop  = last_sunday.replace(hour=23, minute=59, second=59)
+        return start.strftime("%Y-%m-%dT%H:%M:%SZ"), stop.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Exact date: "2026-02-20"
+    try:
+        date  = datetime.strptime(text, "%Y-%m-%d")
+        start = date.replace(hour=0,  minute=0,  second=0)
+        stop  = date.replace(hour=23, minute=59, second=59)
+        return start.strftime("%Y-%m-%dT%H:%M:%SZ"), stop.strftime("%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        pass
+
+    # Date range: "2026-02-20 to 2026-02-25"
+    if " to " in text:
+        parts = text.split(" to ")
+        if len(parts) == 2:
+            try:
+                start = datetime.strptime(parts[0].strip(), "%Y-%m-%d")
+                stop  = datetime.strptime(parts[1].strip(), "%Y-%m-%d")
+                stop  = stop.replace(hour=23, minute=59, second=59)
+                return (
+                    start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    stop.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                )
+            except ValueError:
+                pass
+
+    logger.warning(f"Could not parse time range '{text}', defaulting to 24h")
+    return "-24h", "now()"
+
+
+def _aggregation_window(start: str) -> str:
+    """
+    Choose an appropriate aggregation window based on time range.
+    Longer ranges get coarser resolution to keep file size small.
+    """
+    if start.startswith("-"):
+        value = start[1:]
+        if value.endswith("h"):
+            hours = int(value[:-1])
+            return "5m" if hours <= 24 else "15m"
+        if value.endswith("d"):
+            days = int(value[:-1])
+            return "15m" if days <= 3 else "1h"
+    # Absolute timestamps — default to 15m
+    return "15m"
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +318,41 @@ from(bucket: "{bucket}")
 # SECTION 2: AD-HOC PLOTTING
 # =============================================================================
 
+
+_COLORS = {
+    "blue":    "#89b4fa",
+    "red":     "#f38ba8",
+    "peach":   "#fab387",
+    "green":   "#a6e3a1",
+    "mauve":   "#cba6f7",
+    "sky":     "#89dceb",
+    "yellow":  "#f9e2af",
+    "text":    "#cdd6f4",
+    "surface": "#313244",
+    "base":    "#1e1e2e",
+    "overlay": "#45475a",
+}
+
+
+def _base_layout(title: str) -> dict:
+    """Shared Plotly layout for all charts."""
+    return dict(
+        title=dict(text=title, font=dict(size=16, color=_COLORS["text"])),
+        template="plotly_dark",
+        paper_bgcolor=_COLORS["base"],
+        plot_bgcolor=_COLORS["base"],
+        font=dict(family="Inter, sans-serif", size=12, color=_COLORS["text"]),
+        hovermode="x unified",
+        legend=dict(
+            orientation="h",
+            yanchor="bottom", y=1.02,
+            xanchor="right",  x=1,
+            font=dict(size=11),
+        ),
+        margin=dict(l=60, r=80, t=80, b=60),
+        xaxis=dict(gridcolor="#313244", showgrid=True, zeroline=False),
+    )
+
 # Cycle through palette colours for auto-assignment
 _PALETTE = [
     _COLORS["blue"],
@@ -213,13 +415,14 @@ def plot_fields(
         label       = s.get("label") or f"{measurement}.{field}"
         unit        = s.get("unit", "")
         axis        = s.get("axis", 1)
+        zone        = s.get("zone", None)
         color       = _PALETTE[i % len(_PALETTE)]
 
         if not measurement or not field:
             logger.warning(f"Skipping series with missing measurement or field: {s}")
             continue
 
-        times, values = _fetch_series(measurement, field, start, stop, window)
+        times, values = _fetch_series(measurement, field, start, stop, window, zone=zone)
         if not times:
             logger.warning(f"No data for {measurement}.{field} in range {time_range}")
             continue
@@ -267,7 +470,7 @@ def plot_fields(
     # Write HTML
     html = fig.to_html(
         full_html=True,
-        include_plotlyjs="cdn",
+        include_plotlyjs=True,
         config={
             "displaylogo":            False,
             "scrollZoom":             True,
@@ -275,16 +478,19 @@ def plot_fields(
         },
     )
 
-    label_safe = time_range.replace(" ", "_").replace("/", "-")
-    filename   = f"explore_{label_safe}.html"
-    tmp_path   = os.path.join(tempfile.gettempdir(), filename)
+    from interface.plot_server import get_plot_url, WWW_DIR
+    os.makedirs(WWW_DIR, exist_ok=True)
+
+    filename = "explore.html"   # Fixed name — overwritten each time
+    filepath = os.path.join(WWW_DIR, filename)
 
     try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
+        with open(filepath, "w", encoding="utf-8") as f:
             f.write(html)
     except Exception as e:
         return None, f"Failed to write chart file: {e}"
 
-    size_kb = os.path.getsize(tmp_path) // 1024
-    logger.info(f"📊 Ad-hoc chart ready: {tmp_path} ({size_kb} KB)")
-    return tmp_path, filename
+    size_kb = os.path.getsize(filepath) // 1024
+    url = get_plot_url(filename)
+    logger.info(f"📊 Ad-hoc chart ready: {url} ({size_kb} KB)")
+    return url, filename

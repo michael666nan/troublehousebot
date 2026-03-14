@@ -5,6 +5,8 @@
 #
 # Row 1 (tall): Predicted indoor temperature + comfort band + outdoor temp
 # Row 2 (short): Planned heat power (filled) + electricity price (secondary axis)
+# Row 3 (short): CO2 emissions forecast
+# Row 4 (short): Outdoor temperature + solar irradiance
 #
 # Public interface:
 #   generate_forecast_chart(forecasts, results) -> (filepath, filename) | (None, error)
@@ -12,7 +14,6 @@
 
 import logging
 import os
-import tempfile
 from datetime import datetime, timedelta
 
 import config
@@ -98,6 +99,7 @@ def generate_forecast_chart(
     T_min  = forecasts["T_min"][:n].tolist()
     T_max  = forecasts["T_max"][:n].tolist()
     price  = forecasts["price"][:n].tolist()
+    co2    = forecasts["co2"][:n].tolist() if "co2" in forecasts else [200.0] * n
     u_opt  = results["u_opt"][:n].tolist()
     mode   = results.get("mode", "")
 
@@ -116,12 +118,13 @@ def generate_forecast_chart(
     # Figure — 3 rows, shared x axis
     # =========================================================================
     fig = make_subplots(
-        rows=3, cols=1,
+        rows=4, cols=1,
         shared_xaxes=True,
-        row_heights=[0.50, 0.25, 0.25],
-        vertical_spacing=0.05,
+        row_heights=[0.40, 0.20, 0.20, 0.20],
+        vertical_spacing=0.04,
         specs=[[{"secondary_y": False}],
                [{"secondary_y": True}],
+               [{"secondary_y": False}],
                [{"secondary_y": True}]],
     )
 
@@ -197,7 +200,20 @@ def generate_forecast_chart(
     ), row=2, col=1, secondary_y=True)
 
     # -------------------------------------------------------------------------
-    # Row 3: Weather inputs
+    # Row 3: CO2 emissions forecast
+    # -------------------------------------------------------------------------
+
+    fig.add_trace(go.Scatter(
+        x=times_dist, y=co2,
+        name="CO₂ forecast",
+        fill="tozeroy",
+        fillcolor="rgba(166, 227, 161, 0.15)",
+        line=dict(color=_COLORS["green"], width=1.5, shape="hv"),
+        hovertemplate="CO₂: %{y:.0f} gCO₂/kWh<extra></extra>",
+    ), row=3, col=1)
+
+    # -------------------------------------------------------------------------
+    # Row 4: Weather inputs
     # -------------------------------------------------------------------------
 
     # Outdoor temperature (primary y)
@@ -206,7 +222,7 @@ def generate_forecast_chart(
         name="Outdoor temp",
         line=dict(color=_COLORS["sky"], width=1.5),
         hovertemplate="Outdoor: %{y:.1f} °C<extra></extra>",
-    ), row=3, col=1, secondary_y=False)
+    ), row=4, col=1, secondary_y=False)
 
     # Solar radiation (secondary y)
     fig.add_trace(go.Scatter(
@@ -216,7 +232,7 @@ def generate_forecast_chart(
         fillcolor="rgba(249, 226, 175, 0.20)",
         line=dict(color=_COLORS["yellow"], width=1.5),
         hovertemplate="Solar: %{y:.0f} W/m²<extra></extra>",
-    ), row=3, col=1, secondary_y=True)
+    ), row=4, col=1, secondary_y=True)
 
     # =========================================================================
     # Layout
@@ -262,19 +278,24 @@ def generate_forecast_chart(
         row=2, col=1, secondary_y=True,
     )
     fig.update_yaxes(
+        title_text="CO₂ (g/kWh)",
+        gridcolor=_COLORS["surface"], zeroline=False,
+        row=3, col=1,
+    )
+    fig.update_yaxes(
         title_text="Outdoor (°C)",
         gridcolor=_COLORS["surface"], zeroline=False,
-        row=3, col=1, secondary_y=False,
+        row=4, col=1, secondary_y=False,
     )
     fig.update_yaxes(
         title_text="Solar (W/m²)",
         gridcolor=_COLORS["surface"], zeroline=False,
-        row=3, col=1, secondary_y=True,
+        row=4, col=1, secondary_y=True,
     )
     fig.update_xaxes(
         gridcolor=_COLORS["surface"],
         showgrid=True, zeroline=False,
-        row=3, col=1,
+        row=4, col=1,
     )
 
     # =========================================================================
@@ -282,7 +303,7 @@ def generate_forecast_chart(
     # =========================================================================
     html = fig.to_html(
         full_html=True,
-        include_plotlyjs="cdn",
+        include_plotlyjs=True,
         config={
             "displaylogo":            False,
             "scrollZoom":             True,
@@ -290,15 +311,25 @@ def generate_forecast_chart(
         },
     )
 
-    filename = f"mpc_forecast_{now.strftime('%Y%m%d_%H%M')}.html"
-    tmp_path = os.path.join(tempfile.gettempdir(), filename)
+    # Save to fixed filename in www/ so the URL never changes
+    from interface.plot_server import get_plot_url, WWW_DIR
+    os.makedirs(WWW_DIR, exist_ok=True)
+
+    # Determine zone for filename
+    try:
+        zone_id = config.get_first_zone_id()
+    except Exception:
+        zone_id = "zone"
+    filename = f"forecast_{zone_id}.html"
+    filepath = os.path.join(WWW_DIR, filename)
 
     try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
+        with open(filepath, "w", encoding="utf-8") as f:
             f.write(html)
     except Exception as e:
         return None, f"Failed to write chart: {e}"
 
-    size_kb = os.path.getsize(tmp_path) // 1024
-    logger.info(f"📊 Forecast chart: {tmp_path} ({size_kb} KB)")
-    return tmp_path, filename
+    size_kb = os.path.getsize(filepath) // 1024
+    url = get_plot_url(filename)
+    logger.info(f"📊 Forecast chart: {url} ({size_kb} KB)")
+    return url, filename

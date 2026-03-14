@@ -170,40 +170,6 @@ TOOL_DEFINITIONS = [
     # =========================================================================
     # CHART TOOLS
     # =========================================================================
-    {
-        "name": "plot_history",
-        "description": (
-            "Generate an interactive historical chart from InfluxDB data and send it to the user. "
-            "Use when the user asks to see, plot, or chart historical data. "
-            "The chart opens in the phone browser with zoom and hover support."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "chart_type": {
-                    "type": "string",
-                    "enum": ["temperatures", "prices", "weather"],
-                    "description": (
-                        "temperatures: room, supply, return, outdoor temps, setpoint, radiator output. "
-                        "prices: spot and full electricity price with tariff period shading. "
-                        "weather: outdoor temperature, wind speed, solar irradiance."
-                    ),
-                },
-                "time_range": {
-                    "type": "string",
-                    "description": (
-                        "Time range for the chart. Supports: "
-                        "'24h', '48h', '7d', '30d' (relative), "
-                        "'today', 'yesterday', 'this week', 'last week', "
-                        "'YYYY-MM-DD' (specific day), "
-                        "'YYYY-MM-DD to YYYY-MM-DD' (date range)."
-                    ),
-                },
-            },
-            "required": ["chart_type", "time_range"],
-        },
-    },
-
     # =========================================================================
     # MEMORY TOOLS
     # =========================================================================
@@ -294,7 +260,8 @@ TOOL_DEFINITIONS = [
         "name": "plot_influx",
         "description": (
             "Generate an ad-hoc interactive chart from any InfluxDB fields. "
-            "Use get_influx_schema first to discover valid measurement and field names. "
+            "ALWAYS call get_influx_schema first — never guess or assume measurement "
+            "or field names, they change over time. "
             "Multiple series can be plotted together. Use axis=2 to put a series on a "
             "secondary y-axis when units differ (e.g. temperature + watts)."
         ),
@@ -327,6 +294,15 @@ TOOL_DEFINITIONS = [
                                 "type": "integer",
                                 "enum": [1, 2],
                                 "description": "Y-axis: 1 = primary (default), 2 = secondary.",
+                            },
+                            "zone": {
+                                "type": "string",
+                                "description": (
+                                    "Zone tag filter e.g. 'zone_1'. Required for zone-specific "
+                                    "measurements (room_temp, supply_temp, return_temp, thermostat, "
+                                    "radiator_output) to exclude legacy untagged data. "
+                                    "Omit for global measurements (outside_weather, electricity_price)."
+                                ),
                             },
                         },
                         "required": ["measurement", "field"],

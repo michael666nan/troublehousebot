@@ -370,32 +370,6 @@ _SCHEDULE_ACTIONS = {
 # SECTION 3: TOP-LEVEL TOOL HANDLERS
 # =============================================================================
 
-def plot_history(state, tool_input: dict, **kwargs) -> dict:
-    """
-    Generate a historical chart and return the file path for Telegram to send.
-
-    Returns a dict with a special "_chart_file" key that assistant.py
-    detects and sends as a Telegram document, separate from the text reply.
-    """
-    from plots.history import generate_chart, CHART_TYPES
-
-    chart_type  = tool_input.get("chart_type", "temperatures")
-    time_range  = tool_input.get("time_range", "24h")
-
-    filepath, filename = generate_chart(chart_type, time_range)
-
-    if filepath is None:
-        # filename contains the error message in this case
-        return {"error": filename}
-
-    label = CHART_TYPES.get(chart_type, chart_type)
-    return {
-        "_chart_file": filepath,   # Detected by assistant.py
-        "_filename":   filename,
-        "description": f"{label} for {time_range}",
-        "message":     "Chart generated — sending as file.",
-    }
-
 
 def get_home_data(state, tool_input: dict, **kwargs) -> dict:
     """Fetch one or more types of live home data in a single call."""
@@ -525,7 +499,7 @@ def plot_influx(state, tool_input: dict, **kwargs) -> dict:
         return {"error": filename}
 
     return {
-        "_chart_file": filepath,
+        "_chart_url": filepath,
         "_filename":   filename,
         "description": f"{title} — {time_range}",
         "message":     "Chart generated — sending as file.",
@@ -537,7 +511,6 @@ def plot_influx(state, tool_input: dict, **kwargs) -> dict:
 
 _HANDLERS = {
     "get_home_data":      get_home_data,
-    "plot_history":       plot_history,
     "update_schedule":    update_schedule,
     "search_memory":      search_memory,
     "get_recent_history": get_recent_history,

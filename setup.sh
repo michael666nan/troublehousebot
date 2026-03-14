@@ -62,6 +62,7 @@ if [ -f "$BOT_DIR/.env" ]; then
     INFLUXDB_TOKEN="troublehousebot-influx-token"
     BOT_TOKEN=${BOT_TOKEN:-""}
     CLAUDE_API_KEY=${CLAUDE_API_KEY:-""}
+    TAILSCALE_AUTH_KEY=${TAILSCALE_AUTH_KEY:-""}
 else
     read -p "  InfluxDB admin username [admin]: " INFLUX_ADMIN_USER
     INFLUX_ADMIN_USER=${INFLUX_ADMIN_USER:-"admin"}
@@ -75,6 +76,12 @@ else
     echo ""
 
     read -s -p "  Anthropic API key: " CLAUDE_API_KEY
+    echo ""
+
+    echo ""
+    echo "  Get a Tailscale auth key from: https://login.tailscale.com/admin/settings/keys"
+    echo "  (Create a reusable key so re-running setup reconnects automatically)"
+    read -s -p "  Tailscale auth key: " TAILSCALE_AUTH_KEY
     echo ""
 fi
 
@@ -173,6 +180,29 @@ else
 fi
 echo ""
 
+
+# =============================================================================
+# SECTION 5b: TAILSCALE
+# =============================================================================
+
+echo "══════════════════════════════════════════════════════════════"
+echo "  🔒 Step 2b: Installing Tailscale"
+echo "══════════════════════════════════════════════════════════════"
+
+if command -v tailscale &> /dev/null; then
+    echo "⏭️  Tailscale already installed, skipping install..."
+else
+    curl -fsSL https://tailscale.com/install.sh | sh
+    echo "✅ Tailscale installed"
+fi
+
+if [ -n "$TAILSCALE_AUTH_KEY" ]; then
+    sudo tailscale up --auth-key="$TAILSCALE_AUTH_KEY" --accept-routes
+    echo "✅ Tailscale connected: $(tailscale ip -4 2>/dev/null || echo 'IP pending')"
+else
+    echo "⚠️  No Tailscale auth key — run manually: sudo tailscale up"
+fi
+echo ""
 
 # =============================================================================
 # SECTION 6: ZIGBEE2MQTT
@@ -298,6 +328,8 @@ cat > "$BOT_DIR/.env" << EOF
 INFLUXDB_TOKEN=$INFLUXDB_TOKEN
 BOT_TOKEN=$BOT_TOKEN
 CLAUDE_API_KEY=$CLAUDE_API_KEY
+TAILSCALE_AUTH_KEY=$TAILSCALE_AUTH_KEY
+PLOT_SERVER_PORT=8181
 EOF
 
 chmod 600 "$BOT_DIR/.env"   # Owner read/write only
@@ -349,6 +381,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=$BOT_DIR
+ReadWritePaths=$BOT_DIR/www
 
 [Install]
 WantedBy=multi-user.target

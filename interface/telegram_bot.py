@@ -217,9 +217,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += "/price — Current electricity price breakdown\n"
     msg += f"/schedule [<code>hours</code>] [<code>zone</code>] — Occupancy schedule forecast\n"
     msg += f"  e.g. <code>/schedule 48 {zone_ids[0]}</code>\n"
-    msg += f"/plot <code>&lt;type&gt;</code> [<code>zone</code>] [<code>hours</code>] — Historical data chart\n"
     msg += "  types: <code>temperatures</code> | <code>radiator</code> | <code>prices</code>\n"
-    msg += f"  e.g. <code>/plot temperatures {zone_ids[0]} 24</code>\n"
 
     msg += "\n<b>MPC</b>\n"
     msg += f"/mpc [<code>zone</code>] — MPC state estimate and forecast chart\n"
@@ -237,7 +235,6 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg += "\n<b>AI Assistant</b>\n"
     msg += "Just type any message to chat with the AI assistant.\n"
-    msg += "/plot — Generate a historical data chart\n"
 
     await update.message.reply_text(msg, parse_mode="HTML")
 
@@ -500,19 +497,9 @@ async def cmd_mpc(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(msg, parse_mode="HTML")
 
-    chart_path = mpc_module.get_mpc_plot_path(zone_id)
-    if chart_path:
-        try:
-            import os
-            filename = os.path.basename(chart_path)
-            with open(chart_path, 'rb') as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=filename,
-                    caption="📊 MPC forecast — open in browser for interactive view",
-                )
-        except Exception as e:
-            await update.message.reply_text(f"⚠️ Could not send chart: {e}")
+    chart_url = mpc_module.get_mpc_plot_path(zone_id)
+    if chart_url:
+        await _send_chart(update, chart_url, "MPC Forecast")
     else:
         await update.message.reply_text("📊 No MPC chart available yet. Use /mpc run to generate one.")
 
@@ -767,57 +754,18 @@ async def cmd_sysid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # SECTION 6: AI ASSISTANT COMMANDS
 # =============================================================================
 
-async def _send_chart(update: Update, path: str, title: str) -> None:
-    """Send a Plotly HTML chart as a Telegram document, then delete the temp file."""
-    try:
-        filename = title.replace(" ", "_").replace("|", "-") + ".html"
-        with open(path, "rb") as f:
-            await update.message.reply_document(
-                document=f,
-                filename=filename,
-                caption=f"📊 {title}",
-            )
-    finally:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+async def _send_chart(update: Update, url_or_path: str, title: str) -> None:
+    """Send a Plotly HTML chart as a clickable URL link."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(f"📊 {title}", url=url_or_path)
+    ]])
+    await update.message.reply_text(
+        f"📊 <b>{title}</b>",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
 
-
-async def cmd_plot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /plot <type> [range] - Generate a historical data chart.
-
-    Examples:
-        /plot temperatures 24h
-        /plot prices 7d
-        /plot weather yesterday
-    """
-    if not is_allowed(update.effective_user.id):
-        return
-
-    args = context.args or []
-    if not args:
-        await update.message.reply_text(
-            "Usage: /plot <type> [range]\n\n"
-            "Types: temperatures, prices, weather\n"
-            "Ranges: 6h, 24h, 7d, 30d, today, yesterday, this week, last week",
-        )
-        return
-
-    chart_type = args[0].lower()
-    range_str  = " ".join(args[1:]) if len(args) > 1 else "24h"
-
-    await update.message.reply_text(f"📊 Generating {chart_type} chart for {range_str}...")
-
-    from plots.history import generate_chart
-    path, title = generate_chart(chart_type, range_str)
-
-    if path is None:
-        await update.message.reply_text(f"❌ {title}")
-        return
-
-    await _send_chart(update, path, title)
 
 
 def _strip_unknown_html(text: str) -> str:
@@ -885,7 +833,6 @@ def create_bot(assistant, zones: dict) -> Application:
     app.add_handler(CommandHandler("start", cmd_help))
 
     # AI assistant
-    app.add_handler(CommandHandler("plot", cmd_plot))
 
     # Plain text handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

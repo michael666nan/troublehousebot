@@ -36,6 +36,7 @@ from control import model_store as _model_store
 from state import state
 from forecasts import weather as weather_module
 from forecasts import prices as prices_module
+from forecasts import co2 as co2_module
 from control import schedules
 
 logger = logging.getLogger(__name__)
@@ -255,6 +256,14 @@ def get_forecasts(horizon_steps: int, zone_id: str) -> dict | None:
 
     price = np.array(price_h.get("price_full", []))[:horizon_steps]
 
+    # ── CO2 ──────────────────────────────────────────────────────────────────
+    co2_data = co2_module.fetch_co2_forecast(days_back=0, days_forward=3)
+    if co2_data:
+        co2_h = co2_module.get_co2_horizon(co2_data, steps=horizon_steps, dt_minutes=DT_MINUTES, pad=True)
+        co2   = np.array(co2_h["co2"])[:horizon_steps] if co2_h else None
+    else:
+        co2 = None
+
     # ── Schedule ─────────────────────────────────────────────────────────────
     sched_h = schedules.get_setpoint_horizon(steps=horizon_steps, room=zone_id)
     if not sched_h:
@@ -275,12 +284,15 @@ def get_forecasts(horizon_steps: int, zone_id: str) -> dict | None:
     T_amb  = np.nan_to_num(T_amb,  nan=5.0)
     P_sol  = np.nan_to_num(P_sol,  nan=0.0)
     price  = np.nan_to_num(price,  nan=2.0)
+    # CO2 fallback: 200 gCO2/kWh if forecast unavailable
+    co2    = np.nan_to_num(co2, nan=200.0) if co2 is not None else np.full(horizon_steps, 200.0)
 
     return {
         "n_steps": horizon_steps,
         "T_amb":   T_amb,
         "P_sol":   P_sol,
         "price":   price,
+        "co2":     co2,
         "T_min":   T_min,
         "T_max":   T_max,
         "state":   states,
@@ -388,6 +400,8 @@ def solve_mpc(
     T_min   = np.asarray(forecasts["T_min"])
     T_max   = np.asarray(forecasts["T_max"])
     price   = np.asarray(forecasts["price"])
+    co2     = np.asarray(forecasts["co2"])     # gCO2/kWh
+    alpha   = float(CFG.get("co2_weight", 0.0))  # 0=price only, 1=CO2 only
     penalty = CFG["slack_penalty"]
     cop     = CFG["cop"]
 
@@ -434,12 +448,19 @@ def solve_mpc(
     ]
 
     # ── Objective ─────────────────────────────────────────────────────────────
-    energy_cost = price @ u * DT_HOURS / (1000.0 * cop)
-    
-    # We penalize both comfort violations and rapid temperature spikes
+    # Normalize both objectives to be dimensionless so alpha is a clean 0-1 slider.
+    # ref_price [DKK/kWh] and ref_co2 [gCO2/kWh] are typical Danish grid values.
+    ref_price = 2.0    # DKK/kWh
+    ref_co2   = 200.0  # gCO2/kWh
+    kWh_per_step = DT_HOURS / (1000.0 * cop)  # [kWh/W] per step
+
+    price_obj = (price / ref_price) @ u * kWh_per_step   # dimensionless
+    co2_obj   = (co2   / ref_co2)   @ u * kWh_per_step   # dimensionless
+
+    energy_cost     = (1.0 - alpha) * price_obj + alpha * co2_obj
     comfort_penalty = penalty * cp.sum(slack)
-    roc_penalty     = penalty * cp.sum(slack_roc) 
-    
+    roc_penalty     = penalty * cp.sum(slack_roc)
+
     objective = cp.Minimize(energy_cost + comfort_penalty + roc_penalty)
 
     # ── Solve ─────────────────────────────────────────────────────────────────
@@ -495,7 +516,7 @@ def solve_mpc(
 # =============================================================================
 
 def save_plot(forecasts: dict, results: dict, x_hat=None) -> str | None:
-    """Generate forecast chart. Returns filepath or None."""
+    """Generate forecast chart. Returns URL or None."""
     try:
         from plots.forecast import generate_forecast_chart
         filepath, result = generate_forecast_chart(forecasts, results, x_hat=x_hat)
@@ -566,11 +587,8 @@ def run_mpc_step(zone_id: str, max_heat: float = 1000.0, save_plot_flag: bool = 
     # --- Plot ---
     if save_plot_flag:
         try:
-            old_path = get_state().get("last_chart_path")
-            if old_path and os.path.exists(old_path):
-                os.unlink(old_path)
-            chart_path = save_plot(forecasts, results, x_hat=x_post)
-            update_state({"last_chart_path": chart_path})
+            chart_url = save_plot(forecasts, results, x_hat=x_post)
+            update_state({"last_chart_path": chart_url})
         except Exception as e:
             logger.warning(f"Plot failed: {e}")
 
@@ -595,8 +613,7 @@ def get_mpc_status(zone_id: str) -> dict:
 
 
 def get_mpc_plot_path(zone_id: str) -> str | None:
-    """Get path to latest forecast chart HTML for a zone, or None."""
+    """Get URL of latest forecast chart for a zone, or None."""
     _init_zone_globals(zone_id)
-    s    = get_state()
-    path = s.get("last_chart_path")
-    return path if path and os.path.exists(path) else None
+    s = get_state()
+    return s.get("last_chart_path") or None

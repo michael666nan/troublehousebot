@@ -21,10 +21,12 @@ from state import state
 from infra.mqtt import mqtt
 from infra.influx import influx
 from interface.telegram_bot import create_bot
+from interface import plot_server
 from interface.ai_assistant.assistant import AIAssistant
 from control.radiator import Radiator, supply_temp_from_outdoor
 from forecasts import weather as weather_module
 from forecasts import prices as prices_module
+from forecasts import co2 as co2_module
 from control import mpc as mpc_module
 
 logging.basicConfig(
@@ -220,6 +222,40 @@ class PriceScheduler:
             self.timer.start()
 
 
+
+class Co2Scheduler:
+    """Periodically fetches CO2 emissions and updates state (every 5 min)."""
+
+    def __init__(self, interval_seconds: int = 300):
+        self.interval = interval_seconds
+        self.timer    = None
+        self.running  = False
+
+    def start(self):
+        self.running = True
+        self._run_update()
+        logger.info(f"CO2 scheduler started (every {self.interval}s)")
+
+    def stop(self):
+        self.running = False
+        if self.timer:
+            self.timer.cancel()
+
+    def _run_update(self):
+        if not self.running:
+            return
+        try:
+            data = co2_module.fetch_current_co2()
+            if data:
+                state.update_co2(data)
+        except Exception as e:
+            logger.error(f"CO2 update failed: {e}")
+        if self.running:
+            self.timer = threading.Timer(self.interval, self._run_update)
+            self.timer.daemon = True
+            self.timer.start()
+
+
 class MpcScheduler:
     """
     Runs MPC optimization for one zone at clock-aligned intervals
@@ -346,12 +382,14 @@ class Application:
 
         self.weather_scheduler = WeatherScheduler(config.WEATHER_UPDATE_INTERVAL)
         self.price_scheduler   = PriceScheduler(config.WEATHER_UPDATE_INTERVAL)
+        self.co2_scheduler     = Co2Scheduler(interval_seconds=300)
         self.assistant         = AIAssistant(state)
         self.telegram_app      = None
 
     def start(self):
         logger.info("Starting TroubleHouseBot...")
 
+        plot_server.start()
         influx.start()
         mqtt.start()
 
@@ -360,6 +398,7 @@ class Application:
 
         self.weather_scheduler.start()
         self.price_scheduler.start()
+        self.co2_scheduler.start()
 
         self.telegram_app = create_bot(assistant=self.assistant, zones=self.zones)
 
@@ -374,6 +413,7 @@ class Application:
             zone.stop()
         self.weather_scheduler.stop()
         self.price_scheduler.stop()
+        self.co2_scheduler.stop()
         mqtt.stop()
         influx.stop()
         logger.info("Goodbye!")

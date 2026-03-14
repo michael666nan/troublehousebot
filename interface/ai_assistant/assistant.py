@@ -148,9 +148,14 @@ class AIAssistant:
                 result = dispatch(tool_call["name"], tool_call["input"], self._state, chat_id=chat_id)
                 logger.info(f"🔧 {tool_call['name']} → {result}")
 
-                # Collect chart files — don't pass the path to Claude,
+                # Collect chart URLs — don't pass the URL to Claude,
                 # just tell it the chart was generated
-                if "_chart_file" in result:
+                if "_chart_url" in result:
+                    url = result.pop("_chart_url")
+                    result.pop("_filename", None)
+                    collected_docs.append(url)
+                elif "_chart_file" in result:
+                    # Legacy fallback
                     filepath = result.pop("_chart_file")
                     result.pop("_filename", None)
                     if os.path.exists(filepath):

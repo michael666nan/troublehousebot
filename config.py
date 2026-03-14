@@ -119,6 +119,7 @@ ZONES = {
             "horizon_hours": 48,
             "cop":           4.0,
             "slack_penalty": 1e4,
+            "co2_weight":    0.0,   # 0 = pure price, 1 = pure CO2, 0.5 = equal weight
         },
 
         # ---- Grey-box thermal model (2R2C) initial parameters ----------------
@@ -176,6 +177,7 @@ ZONES = {
             "horizon_hours": 48,
             "cop":           4.0,
             "slack_penalty": 1e4,
+            "co2_weight":    0.0,   # 0 = pure price, 1 = pure CO2, 0.5 = equal weight
         },
 
         # ---- Grey-box thermal model (2R2C) initial parameters ----------------
