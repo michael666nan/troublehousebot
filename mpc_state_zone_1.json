@@ -1,11 +1,11 @@
 {
   "x_hat": [
-    20.099075829095792,
-    21.243408228291802
+    20.450411812018245,
+    21.50406168690526
   ],
-  "last_update": "2026-03-14T09:00:05.298038",
-  "last_y_measured": 20.1,
+  "last_update": "2026-03-14T11:30:05.333467",
+  "last_y_measured": 20.45,
   "last_u": 133.9,
-  "last_chart_path": "http://100.75.30.12:8181/forecast_zone_1.html",
-  "last_innovation": 0.004913757193143908
+  "last_chart_path": "http://troublehouse.duckdns.org:8181/forecast_zone_1.html",
+  "last_innovation": -0.0021895779856961894
 }

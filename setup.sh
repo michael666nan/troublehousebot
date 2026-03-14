@@ -62,7 +62,8 @@ if [ -f "$BOT_DIR/.env" ]; then
     INFLUXDB_TOKEN="troublehousebot-influx-token"
     BOT_TOKEN=${BOT_TOKEN:-""}
     CLAUDE_API_KEY=${CLAUDE_API_KEY:-""}
-    TAILSCALE_AUTH_KEY=${TAILSCALE_AUTH_KEY:-""}
+    PLOT_SERVER_PASSWORD=${PLOT_SERVER_PASSWORD:-""}
+    PLOT_SERVER_HOST=${PLOT_SERVER_HOST:-""}
 else
     read -p "  InfluxDB admin username [admin]: " INFLUX_ADMIN_USER
     INFLUX_ADMIN_USER=${INFLUX_ADMIN_USER:-"admin"}
@@ -79,10 +80,11 @@ else
     echo ""
 
     echo ""
-    echo "  Get a Tailscale auth key from: https://login.tailscale.com/admin/settings/keys"
-    echo "  (Create a reusable key so re-running setup reconnects automatically)"
-    read -s -p "  Tailscale auth key: " TAILSCALE_AUTH_KEY
+    read -s -p "  Plot server password: " PLOT_SERVER_PASSWORD
     echo ""
+    echo ""
+    echo "  DuckDNS hostname e.g. myhome.duckdns.org (leave blank for local-only):"
+    read -p "  DuckDNS hostname: " PLOT_SERVER_HOST
 fi
 
 echo ""
@@ -182,25 +184,25 @@ echo ""
 
 
 # =============================================================================
-# SECTION 5b: TAILSCALE
+# SECTION 5b: DUCKDNS
 # =============================================================================
 
 echo "══════════════════════════════════════════════════════════════"
-echo "  🔒 Step 2b: Installing Tailscale"
+echo "  🦆 Step 2b: DuckDNS Dynamic DNS"
 echo "══════════════════════════════════════════════════════════════"
 
-if command -v tailscale &> /dev/null; then
-    echo "⏭️  Tailscale already installed, skipping install..."
+if [ -n "$PLOT_SERVER_HOST" ]; then
+    DUCKDNS_DOMAIN=$(echo "$PLOT_SERVER_HOST" | sed 's/.duckdns.org//')
+    if grep -q "^DUCKDNS_TOKEN=.\+" "$BOT_DIR/.env" 2>/dev/null; then
+        DUCKDNS_TOKEN=$(grep "^DUCKDNS_TOKEN=" "$BOT_DIR/.env" | cut -d= -f2)
+        CRON_CMD="*/5 * * * * curl -s \"https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=\" > /dev/null"
+        (crontab -l 2>/dev/null | grep -v duckdns.org; echo "$CRON_CMD") | crontab -
+        echo "✅ DuckDNS cron job installed (updates every 5 min)"
+    else
+        echo "⚠️  Add DUCKDNS_TOKEN=<your-token> to .env then re-run setup to enable auto-update"
+    fi
 else
-    curl -fsSL https://tailscale.com/install.sh | sh
-    echo "✅ Tailscale installed"
-fi
-
-if [ -n "$TAILSCALE_AUTH_KEY" ]; then
-    sudo tailscale up --auth-key="$TAILSCALE_AUTH_KEY" --accept-routes
-    echo "✅ Tailscale connected: $(tailscale ip -4 2>/dev/null || echo 'IP pending')"
-else
-    echo "⚠️  No Tailscale auth key — run manually: sudo tailscale up"
+    echo "⏭️  No DuckDNS hostname configured — plot server local-only"
 fi
 echo ""
 
@@ -328,8 +330,11 @@ cat > "$BOT_DIR/.env" << EOF
 INFLUXDB_TOKEN=$INFLUXDB_TOKEN
 BOT_TOKEN=$BOT_TOKEN
 CLAUDE_API_KEY=$CLAUDE_API_KEY
-TAILSCALE_AUTH_KEY=$TAILSCALE_AUTH_KEY
 PLOT_SERVER_PORT=8181
+PLOT_SERVER_USER=admin
+PLOT_SERVER_PASSWORD=$PLOT_SERVER_PASSWORD
+PLOT_SERVER_HOST=$PLOT_SERVER_HOST
+# DUCKDNS_TOKEN=your-token-here  # Add this to enable DuckDNS auto-update
 EOF
 
 chmod 600 "$BOT_DIR/.env"   # Owner read/write only
@@ -406,6 +411,12 @@ echo ""
 echo "  📁 Bot directory:   $BOT_DIR"
 echo "  📡 Zigbee2MQTT UI:  http://<pi-ip>:8080"
 echo "  📊 InfluxDB UI:     http://<pi-ip>:8086"
+echo "  📊 Plot server:     http://<pi-ip>:8181  (local)"
+if [ -n "$PLOT_SERVER_HOST" ]; then
+  echo "                     http://$PLOT_SERVER_HOST:8181  (public)"
+  echo ""
+  echo "  ⚠️  Port-forward 8181 on your router → this Pi"
+fi
 echo ""
 echo "  Next step: sudo reboot"
 echo ""

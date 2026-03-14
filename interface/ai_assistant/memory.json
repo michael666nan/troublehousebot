@@ -10060,6 +10060,194 @@
       "role": "assistant",
       "content": "It's working again! Here are the room temperatures for both the <b>Office</b> and <b>Bedroom</b> from today. Let me know if you'd like to add anything else to the chart \u2014 setpoints, radiator output, electricity prices, etc.",
       "timestamp": "2026-03-14T09:10:04"
+    },
+    {
+      "role": "user",
+      "content": "Show me humidity for the past two days",
+      "timestamp": "2026-03-14T10:56:10"
+    },
+    {
+      "role": "tool_call",
+      "tool_id": "toolu_01JRdXffuhB33AvWB7m13qDy",
+      "name": "get_influx_schema",
+      "input": {},
+      "timestamp": "2026-03-14T10:56:12"
+    },
+    {
+      "role": "tool_result",
+      "tool_id": "toolu_01JRdXffuhB33AvWB7m13qDy",
+      "name": "get_influx_schema",
+      "content": {
+        "bucket": "housebot",
+        "measurements": {
+          "electricity_price": {
+            "fields": [
+              "grid_tariff",
+              "price_eur",
+              "price_full",
+              "price_full_ex_vat",
+              "price_spot",
+              "system_tariff",
+              "tax",
+              "transmission_tariff"
+            ],
+            "first": null,
+            "last": null
+          },
+          "outside_weather": {
+            "fields": [
+              "code",
+              "hum",
+              "is_day",
+              "pressure",
+              "rain",
+              "soil_0cm",
+              "soil_18cm",
+              "soil_54cm",
+              "soil_6cm",
+              "solar_diffuse",
+              "solar_direct",
+              "solar_dni",
+              "solar_east",
+              "solar_ghi",
+              "solar_north",
+              "solar_south",
+              "solar_west",
+              "temp",
+              "wind",
+              "wind_dir",
+              "wind_gust",
+              "wind_speed"
+            ],
+            "first": null,
+            "last": null
+          },
+          "radiator_output": {
+            "fields": [
+              "watts"
+            ],
+            "first": null,
+            "last": null
+          },
+          "return_temp": {
+            "fields": [
+              "battery",
+              "humidity",
+              "linkquality",
+              "power_outage_count",
+              "pressure",
+              "temperature",
+              "voltage"
+            ],
+            "first": null,
+            "last": null
+          },
+          "room_temp": {
+            "fields": [
+              "battery",
+              "humidity",
+              "linkquality",
+              "power_outage_count",
+              "pressure",
+              "temperature",
+              "voltage"
+            ],
+            "first": null,
+            "last": null
+          },
+          "supply_temp": {
+            "fields": [
+              "battery",
+              "humidity",
+              "linkquality",
+              "power_outage_count",
+              "pressure",
+              "temperature",
+              "voltage"
+            ],
+            "first": null,
+            "last": null
+          },
+          "thermostat": {
+            "fields": [
+              "abs_max_heat_setpoint_limit",
+              "adaptation_run_settings",
+              "algorithm_scale_factor",
+              "battery",
+              "external_measured_room_sensor",
+              "heat_available",
+              "heat_required",
+              "linkquality",
+              "load_balancing_enable",
+              "load_estimate",
+              "load_room_mean",
+              "local_temperature",
+              "local_temperature_calibration",
+              "mounted_mode_active",
+              "mounted_mode_control",
+              "occupied_heating_setpoint",
+              "occupied_heating_setpoint_scheduled",
+              "pi_heating_demand",
+              "preheat_status",
+              "radiator_covered",
+              "trigger_time",
+              "window_open_external",
+              "window_open_feature"
+            ],
+            "first": null,
+            "last": null
+          }
+        },
+        "count": 7
+      },
+      "timestamp": "2026-03-14T10:56:13"
+    },
+    {
+      "role": "tool_call",
+      "tool_id": "toolu_0137Sk6LuS8ypkxXVMoUDjQ6",
+      "name": "plot_influx",
+      "input": {
+        "series": [
+          {
+            "measurement": "room_temp",
+            "field": "humidity",
+            "zone": "zone_1",
+            "label": "Office (indoor)",
+            "unit": "%"
+          },
+          {
+            "measurement": "room_temp",
+            "field": "humidity",
+            "zone": "zone_2",
+            "label": "Bedroom (indoor)",
+            "unit": "%"
+          },
+          {
+            "measurement": "outside_weather",
+            "field": "hum",
+            "label": "Outside",
+            "unit": "%"
+          }
+        ],
+        "time_range": "48h",
+        "title": "Humidity \u2013 Past 48 Hours"
+      },
+      "timestamp": "2026-03-14T10:56:17"
+    },
+    {
+      "role": "tool_result",
+      "tool_id": "toolu_0137Sk6LuS8ypkxXVMoUDjQ6",
+      "name": "plot_influx",
+      "content": {
+        "description": "Humidity \u2013 Past 48 Hours \u2014 48h",
+        "message": "Chart generated \u2014 sending as file."
+      },
+      "timestamp": "2026-03-14T10:56:18"
+    },
+    {
+      "role": "assistant",
+      "content": "Here's the humidity chart for the past 48 hours, showing:\n\n- <b>Office</b> \u2013 indoor sensor (zone_1)\n- <b>Bedroom</b> \u2013 indoor sensor (zone_2)\n- <b>Outside</b> \u2013 from the weather station\n\nIdeal indoor humidity is typically <b>40\u201360%</b>. Let me know if anything looks off or if you'd like to dig deeper into a specific zone!",
+      "timestamp": "2026-03-14T10:56:21"
     }
   ]
 }

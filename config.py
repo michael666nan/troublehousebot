@@ -25,10 +25,16 @@ load_dotenv()
 # =============================================================================
 # SECTION 1: SECRETS (from .env)
 # =============================================================================
-
+ 
 INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN")
 BOT_TOKEN      = os.getenv("BOT_TOKEN")
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")
+ 
+# --- Plot server ---
+PLOT_SERVER_PORT     = int(os.getenv("PLOT_SERVER_PORT", "8181"))
+PLOT_SERVER_USER     = os.getenv("PLOT_SERVER_USER", "admin")
+PLOT_SERVER_PASSWORD = os.getenv("PLOT_SERVER_PASSWORD", "")
+PLOT_SERVER_HOST     = os.getenv("PLOT_SERVER_HOST", "")  # e.g. yourname.duckdns.org
 
 
 # =============================================================================
