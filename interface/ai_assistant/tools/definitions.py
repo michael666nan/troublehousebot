@@ -42,6 +42,14 @@ TOOL_DEFINITIONS = [
                     },
                     "description": "List of data types to fetch in one call.",
                 },
+                "zone": {
+                    "type": "string",
+                    "description": (
+                        "Optional zone_id to scope the response (e.g. 'zone_1'). "
+                        "Use this whenever the user asks about a specific room — "
+                        "avoids fetching data for all zones when only one is needed."
+                    ),
+                },
             },
             "required": ["data_type"],
         },

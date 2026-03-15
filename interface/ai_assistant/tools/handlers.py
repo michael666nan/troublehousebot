@@ -30,32 +30,36 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 def _fetch_temperatures(state) -> dict:
-    import config
-    zone_id    = config.get_first_zone_id()
-    zone_cfg   = config.ZONES[zone_id]
-    devices    = zone_cfg["devices"]
-
-    thermostat = state.get_device(devices.get("thermostat", ""))
-    room       = state.get_device(devices.get("room_temp", ""))
-    supply     = state.get_device(devices.get("supply_temp", ""))
-    ret        = state.get_device(devices.get("return_temp", ""))
-    weather    = state.get_weather()
-    radiator_name = zone_cfg.get("radiator", {}).get("name", f"{zone_id}_radiator_output")
-    radiator      = state.get_derived(radiator_name)
-
-    return {
-        "room_temperature_c":        room.get("temperature"),
-        "supply_pipe_temperature_c": supply.get("temperature"),
-        "return_pipe_temperature_c": ret.get("temperature"),
-        "outdoor_temperature_c":     weather.get("temp"),
-        "thermostat_setpoint_c":     thermostat.get("occupied_heating_setpoint"),
-        "thermostat_measured_c":     thermostat.get("local_temperature"),
-        "radiator_output_w":         radiator.get("watts"),
+    import config as _config
+    weather = state.get_weather()
+    result  = {
+        "outdoor_temperature_c": weather.get("temp") if weather else None,
     }
+
+    for zone_id, zone_cfg in _config.ZONES.items():
+        display_name  = zone_cfg["display_name"]
+        devices       = zone_cfg["devices"]
+        thermostat    = state.get_device(devices.get("thermostat", ""))
+        room          = state.get_device(devices.get("room_temp", ""))
+        supply        = state.get_device(devices.get("supply_temp", ""))
+        ret           = state.get_device(devices.get("return_temp", ""))
+        radiator_name = f"{zone_id}_radiator_output"  # state key is always zone-scoped
+        radiator      = state.get_derived(radiator_name)
+
+        result[display_name] = {
+            "room_temperature_c":        room.get("temperature"),
+            "supply_pipe_temperature_c": supply.get("temperature"),
+            "return_pipe_temperature_c": ret.get("temperature"),
+            "thermostat_setpoint_c":     thermostat.get("occupied_heating_setpoint"),
+            "thermostat_measured_c":     thermostat.get("local_temperature"),
+            "radiator_output_w":         radiator.get("watts"),
+        }
+
+    return result
 
 
 def _fetch_prices(state) -> dict:
-    from prices import get_current_period
+    from forecasts.prices import get_current_period
     price = state.get_price()
     if not price:
         return {"error": "No price data available yet"}
@@ -89,23 +93,34 @@ def _fetch_weather(state) -> dict:
 
 
 def _fetch_mpc_status(state) -> dict:
-    try:
-        import mpc as mpc_module
-        status = mpc_module.get_mpc_status()
-    except Exception as e:
-        logger.warning(f"Could not get MPC status: {e}")
-        return {"error": f"MPC status unavailable: {e}"}
+    import config as _config
+    from control import mpc as mpc_module
 
-    x_hat = status.get("x_hat", [])
-    return {
-        "last_run":               status.get("last_update"),
-        "indoor_temp_estimate_c": x_hat[0] if len(x_hat) > 0 else None,
-        "mass_temp_estimate_c":   x_hat[1] if len(x_hat) > 1 else None,
-        "kalman_innovation_c":    status.get("innovation"),
-        "horizon_hours":          status.get("horizon_hours"),
-        "timestep_minutes":       status.get("dt_minutes"),
-        "max_heat_w":             status.get("max_heat"),
-    }
+    result = {}
+    for zone_id, zone_cfg in _config.ZONES.items():
+        display_name = zone_cfg["display_name"]
+        mpc_cfg      = zone_cfg.get("mpc", {})
+        enabled      = mpc_cfg.get("enabled", False)
+        if not enabled:
+            result[display_name] = {"enabled": False}
+            continue
+        try:
+            status = mpc_module.get_mpc_status(zone_id)
+            x_hat  = status.get("x_hat", [])
+            result[display_name] = {
+                "enabled":                True,
+                "last_run":               status.get("last_update"),
+                "indoor_temp_estimate_c": x_hat[0] if len(x_hat) > 0 else None,
+                "mass_temp_estimate_c":   x_hat[1] if len(x_hat) > 1 else None,
+                "kalman_innovation_c":    status.get("last_innovation"),
+                "horizon_hours":          status.get("horizon_hours"),
+                "timestep_minutes":       status.get("dt_minutes"),
+            }
+        except Exception as e:
+            logger.warning(f"Could not get MPC status for {zone_id}: {e}")
+            result[display_name] = {"error": str(e)}
+
+    return result
 
 
 def _fetch_schedule(state) -> dict:
@@ -374,6 +389,7 @@ _SCHEDULE_ACTIONS = {
 def get_home_data(state, tool_input: dict, **kwargs) -> dict:
     """Fetch one or more types of live home data in a single call."""
     requested = tool_input.get("data_type", [])
+    zone      = tool_input.get("zone")       # optional zone_id filter
     if not requested:
         return {"error": "No data_type specified"}
 
@@ -383,7 +399,18 @@ def get_home_data(state, tool_input: dict, **kwargs) -> dict:
         if fetcher is None:
             results[data_type] = {"error": f"Unknown data type: {data_type}"}
         else:
-            results[data_type] = fetcher(state)
+            raw = fetcher(state)
+            # Filter to requested zone if specified and result is a zone-keyed dict
+            if zone and isinstance(raw, dict):
+                import config as _config
+                # Find display name for the requested zone_id
+                display = next(
+                    (cfg["display_name"] for zid, cfg in _config.ZONES.items() if zid == zone),
+                    None
+                )
+                if display and display in raw:
+                    raw = {display: raw[display]}
+            results[data_type] = raw
 
     return results
 
